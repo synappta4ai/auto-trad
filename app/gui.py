@@ -244,32 +244,14 @@ class CompactDashboard(QMainWindow):
         self.txt_events.setStyleSheet("color: #ccc; padding: 2px;")
         
         # Ensamblaje final - Layout único y consistente
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
-        
-        # Verificar que no haya layouts vacíos o duplicados antes de agregar
-        # Agregar en orden sin conflictos
         layout.addLayout(top_row)
-        # Pequeño delay o verificación opcional, pero en PyQt6 esto debería estar bien
         layout.addLayout(metrics_layout)
         layout.addWidget(trades_label)
         layout.addWidget(self.trades_table)
-        # Agregar spacer para evitar que el último widget se estire extraño
         layout.addStretch(1)
-        layout.addWidget(QLabel(""))  # spacer vacío
         layout.addWidget(QLabel("Events:"))
         layout.addWidget(self.txt_events)
-        
-        # Verificar final: asegurar que central widget tenga layout
-        if central.layout() is None:
-            central.setLayout(layout)
-        else:
-            # Si ya tiene layout, no volver a establecer (causa el warning)
-            pass
-        
-        central.setLayout(layout)
-        
+
     def _apply_style(self):
         """Aplicar estilo después de que la interfaz esté completamente armada"""
         CompactStyle.setup_style(QApplication.instance())
@@ -312,104 +294,79 @@ class CompactDashboard(QMainWindow):
         """Actualizar datos compactos"""
         if not self.engine:
             return
-        
+
         S = self.engine.S
-        running = self.engine.running
-        
+        snap = self.engine.snapshot()
+        running = snap["running"]
+        equity = snap["equity"]
+        dd = snap["drawdown_pct"]
+        halted = snap["halted"]
+
         # Indicador running
         if running:
-            self.lbl_status.setText("▶ Ejecutándose")
+            self.lbl_status.setText("Ejecutandose")
             self.lbl_status.setStyleSheet("color: #4caf50;")
         else:
-            self.lbl_status.setText("🛑 Detenido")
+            self.lbl_status.setText("Detenido")
             self.lbl_status.setStyleSheet("color: #aaa;")
-        
-        # Métricas clave
-        equity = S.get("cash", 0)
-        for sym, pos in S.get("positions", {}).items():
-            price = pos.get("entry", 0)
-            equity += pos.get("side", 1) * price * pos.get("qty", 0)
-        
-        peak = S.get("peak", equity)
-        dd = ((peak - equity) / peak * 100) if peak > 0 else 0
-        halted = S.get("halted", False)
-        
+
         # Equity
         self.metrics["EQ"]["label"].setText(f"{equity:.2f}")
         dd_color = "#0aff0a" if dd < 5 else "#ffd700" if dd < 10 else "#ff4d4d"
         self.metrics["EQ"]["label"].setStyleSheet(f"color: {dd_color};")
-        
+
         # Cash
-        self.metrics["CA"]["label"].setText(f"{S.get('cash', 0):.2f}")
-        
+        self.metrics["CA"]["label"].setText(f"{snap['cash']:.2f}")
+
         # Drawdown
-        dd_str = f"{dd:.2f} %"
-        self.metrics["DD"]["label"].setText(dd_str)
-        dd_color = "#0aff0a" if dd < 5 else "#ffd700" if dd < 10 else "#ff4d4d"
+        self.metrics["DD"]["label"].setText(f"{dd:.2f} %")
         self.metrics["DD"]["label"].setStyleSheet(f"color: {dd_color};")
-        
+
         # Running
-        self.metrics["RT"]["label"].setText("Sí" if running else "No")
-        self.metrics["RT"]["label"].setStyleSheet(f"color: #4caf50;" if running else "#ffc107;")
-        
+        self.metrics["RT"]["label"].setText("Si" if running else "No")
+        self.metrics["RT"]["label"].setStyleSheet("color: #4caf50;" if running else "color: #ffc107;")
+
         # Estado halted
-        self.lbl_status.setText("⏸ Pausado" if halted else ("▶ Ejecutándose" if running else "🛑 Detenido"))
-        
-        # Trades simulados
-        row_count = min(3, len(S.get("positions", {})))
-        self.trades_table.setRowCount(row_count)
-        # Events
+        self.lbl_status.setText("Pausado" if halted else ("Ejecutandose" if running else "Detenido"))
+
+        # Posiciones
+        positions = S.get("positions", {})
+        self.trades_table.setRowCount(min(3, len(positions)))
         if halted:
-            self.txt_events.setText("⚠ HALTED - Drawdown exceeded limit")
+            self.txt_events.setText("HALTED - kill switch activo (pulsa Pause para reanudar)")
         elif running:
-            self.txt_events.setText("🔄 Ciclo activo • " + str(len(S.get("positions", {}))) + " posiciones abiertas")
+            self.txt_events.setText("Ciclo activo - " + str(len(positions)) + " posiciones abiertas")
         else:
-            self.txt_events.setText("⏸ Detenido - listo para iniciar")
-    
-    def _update_control_buttons(self, state: str):
-        """Ya definido arriba, mantener compatibilidad"""
-        pass
-    
+            self.txt_events.setText("Detenido - listo para iniciar")
+
     def _on_start_click(self):
-        """Manejar click en botón Start"""
-        if not self.engine.running:
-            self.engine.running = True
-            self._update_control_buttons(state="running")
-            self.txt_events.setText("✅ Motor iniciado - bucle continuo activo")
-    
+        """Manejar click en boton Start"""
+        self.engine.start()
+        self._update_control_buttons(state="running")
+        self.txt_events.setText("Motor iniciado - bucle continuo activo")
+
     def _on_stop_click(self):
         if not self.engine.running:
             return
-        
-        self.engine.running = False
-        if self.engine.stop_ev:
-            self.engine.stop_ev.set()
+        self.engine.stop()
         self._update_control_buttons(state="stopped")
-        self.txt_events.setText("⏹ Motor detenido - sesión finalizada")
-    
+        self.txt_events.setText("Motor detenido - sesion finalizada")
+
     def _on_pause_click(self):
         if not self.engine.running:
             return
-        
-        # Alternar pause
         if self.engine.S.get("halted", False):
-            # Reanudar si estaba halted
-            self.engine.S["halted"] = False
-            self.engine.S["halt_reason"] = ""
-            self.txt_events.setText("▶ Motor reanudado después de halt")
+            self.engine.resume()
+            self.txt_events.setText("Motor reanudado")
         else:
-            # Pausar - setting halted
-            self.engine.S["halted"] = True
-            self.engine.S["halt_reason"] = "paused_by_gui"
-            self.txt_events.setText("⏸ Motor pausado - ciclo actual completado")
-        
-        self.lbl_engine_status.setText("⏸ Pausado" if self.engine.S.get("halted", False) else "▶ Ejecutándose")
-    
+            self.engine.halt("paused_by_gui")
+            self.txt_events.setText("Motor pausado - ciclo actual completado")
+
+        self.lbl_status.setText("Pausado" if self.engine.S.get("halted", False) else "Ejecutandose")
+
     def closeEvent(self, event):
         if self.engine and self.engine.running:
-            self.engine.running = False
-            if self.engine.stop_ev:
-                self.engine.stop_ev.set()
+            self.engine.stop()
         if self.timer.isRunning():
             self.timer.stop()
         super().closeEvent(event)

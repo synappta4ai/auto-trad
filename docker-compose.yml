@@ -9,9 +9,13 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       DATA_DIR: /data
+      UI: web
+      API_BIND: 0.0.0.0          # dentro del contenedor debe escuchar en todas las interfaces
+      API_PORT: 8080
     ports:
-      # por defecto solo accesible desde el propio servidor (127.0.0.1). Para exponerlo: API_BIND=0.0.0.0
-      - "${API_BIND:-127.0.0.1}:${API_PORT:-8080}:8000"
+      # por defecto solo accesible desde el propio servidor (127.0.0.1).
+      # Para exponerlo: API_HOST_BIND=0.0.0.0
+      - "${API_HOST_BIND:-127.0.0.1}:${API_PORT:-8080}:8080"
     volumes:
       - ${VOLUME_NAME:-autotrader_data}:/data
     cpus: ${CPU_LIMIT:-1.0}
@@ -19,7 +23,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).status==200 else 1)"]
       interval: 30s
       timeout: 6s
       retries: 3

@@ -20,6 +20,15 @@ class Engine:
         self.lock = threading.RLock()
         self.running = False          # Flag para controlar start/stop
         self.stop_ev = threading.Event()
+        self.wake_ev = threading.Event()   # despierta el bucle (retrain manual, etc.)
+        self._thread = None
+        self.tick_count = 0
+        self.last_tick_at = 0.0
+        self.train_state = {"status": "idle", "stage": "inactivo", "done": 0, "total": 0,
+                            "fold": 0, "folds": self.cfg.wf_folds, "symbol": None}
+        self._snap_cache = None
+        self.retrain_flag = False
+        self.retrain_reason = None
         self.retrain_flag = False
         self.prices, self.bar_ts = {}, {}
         self.last_equity_log = 0.0
@@ -35,6 +44,15 @@ class Engine:
         for k in ("positions", "champions", "learning", "prev_desired", "cooldown", "vol_ratio", "risk_mult"):
             S.setdefault(k, {})
         self.S = S
+        self._snap_cache = {"mode": cfg.mode, "running": False, "busy": False,
+                            "equity": S["cash"], "cash": S["cash"], "peak": S["peak"], "drawdown_pct": 0.0,
+                            "halted": False, "halt_reason": "", "pause_reason": "", "trades_today": 0,
+                            "positions": {}, "champions": {}, "risk_mult": {}, "vol_ratio": {},
+                            "last_train": S.get("last_train"), "next_train": None, "prices": {},
+                            "tick": 0, "last_tick": 0, "poll_seconds": cfg.poll_seconds,
+                            "learning_enabled": cfg.learning_enabled,
+                            "retrain_interval_hours": cfg.retrain_interval_hours,
+                            "training": dict(self.train_state)}
 
     # ------------------------------------------------------------------ utilidades
     def _equity(self):
@@ -52,6 +70,40 @@ class Engine:
         self.store.add_event(typ, data)
 
     # ------------------------------------------------------------------ ciclo
+    def start(self):
+        """Arranca el bucle continuo en un hilo daemon. Idempotente.
+
+        Limpia el kill switch para que el botón Iniciar funcione aunque el
+        motor esté haltado o pausado por pérdidas.
+        """
+        with self.lock:
+            if self.running and self._thread and self._thread.is_alive():
+                return False
+            eq = self._equity()
+            self.S.update(halted=False, halt_reason="", pause_reason="", peak=eq)
+            self.retrain_flag = self.cfg.retrain_on_start
+            self.retrain_reason = "arranque" if self.cfg.retrain_on_start else None
+            self.stop_ev.clear()
+            self.wake_ev.clear()
+            self.running = True
+            self._event("start", {"mode": self.cfg.mode, "symbols": self.cfg.symbols})
+            self.store.put("state", self.S)
+        self._thread = threading.Thread(target=self.run, name="engine", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self):
+        """Detiene el bucle continuo. Idempotente."""
+        with self.lock:
+            was = self.running
+            self.running = False
+            self.stop_ev.set()
+            self.wake_ev.set()
+            if was:
+                self._event("stop", {"equity": round(self._equity(), 4)})
+            self.store.put("state", self.S)
+        return was
+
     def run(self):
         log.info("Motor iniciado | modo=%s fuente=%s símbolos=%s tf=%s", self.cfg.mode, self.cfg.data_source, self.cfg.symbols, self.cfg.timeframe)
         self.running = True
@@ -62,11 +114,11 @@ class Engine:
                 except Exception:
                     log.exception("error en tick (se reintenta)")
                 # Si no estamos halted y no hay pause, esperar pol seconds
-                if not self.S.get("halted", False) and not self.S.get("pause_reason", ""):
-                    self.stop_ev.wait(self.cfg.poll_seconds)
-                else:
-                    # Si está halted o pausado, esperar más largo o hasta que cambie
-                    self.stop_ev.wait(max(self.cfg.poll_seconds, 5))
+                delay = self.cfg.poll_seconds
+                if self.S.get("halted", False) or self.S.get("pause_reason", ""):
+                    delay = max(delay, 5)
+                self.wake_ev.wait(delay)
+                self.wake_ev.clear()
         finally:
             self.running = False
 
@@ -74,6 +126,8 @@ class Engine:
         with self.lock:
             cfg, S = self.cfg, self.S
             now = time.time()
+            self.tick_count += 1
+            self.last_tick_at = now
             self.feed.advance()
             dfs, new_bar = {}, {}
             for sym in cfg.symbols:
@@ -244,7 +298,7 @@ class Engine:
             return
         lt, reason = S["last_train"], None
         if self.retrain_flag:
-            reason = "manual"
+            reason = self.retrain_reason or "manual"
         elif lt is None:
             reason = "inicial"
         elif now - lt >= cfg.retrain_interval_hours * 3600:
@@ -259,20 +313,44 @@ class Engine:
         if not reason:
             return
         self.retrain_flag = False
-        for sym, df in dfs.items():
-            t0 = time.time()
-            old = S["champions"].get(sym)
-            new, rep = optimizer.train_symbol(df, cfg, old)
-            rep.update(reason=reason, at=now, seconds=round(time.time() - t0, 2))
-            S["learning"][sym] = rep
-            same = (old or {}).get("strategy") == (new or {}).get("strategy") and (old or {}).get("params") == (new or {}).get("params")
-            S["champions"][sym] = new
-            if not same:
-                S["prev_desired"][sym] = None
-            self._event("train", {"symbol": sym, "reason": reason, "decision": rep.get("decision", rep["status"]),
-                                  "champion": None if new is None else {"strategy": new["strategy"], "params": new["params"]},
-                                  "gate_fails": rep.get("gate_fails")})
-        S["last_train"] = now
+        self.train_state = {"status": "running", "stage": "preparando", "done": 0, "total": 0,
+                            "fold": 0, "folds": cfg.wf_folds, "symbol": None, "reason": reason,
+                            "started": now, "symbols": list(dfs), "symbol_index": 0}
+        self._event("train_start", {"reason": reason, "symbols": list(dfs), "folds": cfg.wf_folds})
+        try:
+            for idx, (sym, df) in enumerate(dfs.items()):
+                t0 = time.time()
+                old = S["champions"].get(sym)
+
+                def progress(ev, _sym=sym, _idx=idx):
+                    st = self.train_state
+                    st.update(ev)
+                    st["symbol"], st["symbol_index"] = _sym, _idx
+                    st["updated"] = time.time()
+
+                progress({"stage": "preparando", "done": 0, "total": 0, "fold": 0})
+                new, rep = optimizer.train_symbol(df, cfg, old, progress=progress)
+                rep.update(reason=reason, at=now, seconds=round(time.time() - t0, 2))
+                S["learning"][sym] = rep
+                same = (old or {}).get("strategy") == (new or {}).get("strategy") and (old or {}).get("params") == (new or {}).get("params")
+                S["champions"][sym] = new
+                if not same:
+                    S["prev_desired"][sym] = None
+                self._event("train", {"symbol": sym, "reason": reason, "decision": rep.get("decision", rep["status"]),
+                                      "candidates": rep.get("candidates"), "seconds": rep.get("seconds"),
+                                      "champion": None if new is None else {"strategy": new["strategy"], "params": new["params"]},
+                                      "gate_fails": rep.get("gate_fails")})
+            S["last_train"] = now
+            self.train_state = {"status": "idle", "stage": "completado", "done": 1, "total": 1,
+                                "fold": cfg.wf_folds, "folds": cfg.wf_folds,
+                                "symbol": None, "reason": reason,
+                                "started": now, "finished": time.time(),
+                                "seconds": round(time.time() - now, 2)}
+        except Exception:
+            self.train_state = {"status": "error", "stage": "error", "done": 0, "total": 0,
+                                "fold": 0, "folds": cfg.wf_folds, "symbol": None,
+                                "reason": reason, "started": now, "finished": time.time()}
+            raise
 
     # ------------------------------------------------------------------ control (API)
     def halt(self, reason="manual"):
@@ -302,16 +380,44 @@ class Engine:
 
     def request_retrain(self):
         self.retrain_flag = True
+        self.retrain_reason = "manual"
+        self.wake_ev.set()
 
     def snapshot(self):
-        with self.lock:
+        # Durante un entrenamiento el lock está tomado: en vez de bloquear la
+        # API devolvemos el último estado conocido + el progreso en vivo.
+        if not self.lock.acquire(timeout=0.05):
+            snap = dict(self._snap_cache or {})
+            snap.update(busy=True, running=self.running, training=dict(self.train_state),
+                        tick=self.tick_count, last_tick=self.last_tick_at)
+            return snap
+        try:
             S, eq = self.S, self._equity()
+            syms = self.cfg.symbols
             pos = {}
             for s, p in S["positions"].items():
+                if s not in syms:
+                    continue
                 px = self.prices.get(s, p["entry"])
                 pos[s] = dict(p, price=px, unrealized=round(p["side"] * (px - p["entry"]) * p["qty"], 4))
-            return {"mode": self.cfg.mode, "equity": round(eq, 4), "cash": round(S["cash"], 4), "peak": round(S["peak"], 4),
+            champions = {s: c for s, c in S["champions"].items() if s in syms}
+            risk_mult = {s: m for s, m in S["risk_mult"].items() if s in syms}
+            vol_ratio = {s: round(r, 3) for s, r in S["vol_ratio"].items() if s in syms}
+            lt = S["last_train"]
+            next_train = None
+            if self.cfg.learning_enabled and lt:
+                next_train = lt + self.cfg.retrain_interval_hours * 3600
+            snap = {"mode": self.cfg.mode, "running": self.running, "busy": False,
+                    "equity": round(eq, 4), "cash": round(S["cash"], 4), "peak": round(S["peak"], 4),
                     "drawdown_pct": round(S["dd"], 3), "halted": S["halted"], "halt_reason": S["halt_reason"],
                     "pause_reason": S["pause_reason"], "trades_today": S["trades_today"], "positions": pos,
-                    "champions": S["champions"], "risk_mult": S["risk_mult"], "vol_ratio": {k: round(v, 3) for k, v in S["vol_ratio"].items()},
-                    "last_train": S["last_train"], "prices": self.prices}
+                    "champions": champions, "risk_mult": risk_mult, "vol_ratio": vol_ratio,
+                    "last_train": lt, "next_train": next_train, "prices": self.prices,
+                    "tick": self.tick_count, "last_tick": self.last_tick_at,
+                    "poll_seconds": self.cfg.poll_seconds, "training": dict(self.train_state),
+                    "learning_enabled": self.cfg.learning_enabled,
+                    "retrain_interval_hours": self.cfg.retrain_interval_hours}
+            self._snap_cache = snap
+            return snap
+        finally:
+            self.lock.release()

@@ -20,8 +20,3 @@ dependencies = [
 
 [project.scripts]
 autotrader = "app.main:main"
-
-[tool.uv]
-# Extra speed optimizations for uv
-install-dir = ".venv"
-generate-lockfile = true

@@ -4,6 +4,31 @@ import os
 LIVE_PHRASE = "I_UNDERSTAND_THE_RISK"
 
 
+def _load_dotenv():
+    """Carga .env del directorio actual sin dependencias externas.
+
+    No sobreescribe variables ya definidas en el entorno (Docker manda).
+    """
+    path = os.path.join(os.getcwd(), ".env")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
+
 def _raw(name):
     v = os.getenv(name)
     return None if v is None or v.strip() == "" else v.strip()
@@ -55,6 +80,9 @@ class Config:
         self.api_token = _s("API_TOKEN", "")
         self.api_bind = _s("API_BIND", "127.0.0.1")
         self.api_port = _i("API_PORT", 8080)
+        self.ui = _s("UI", "web").lower()          # web | desktop
+        self.auto_start = _b("AUTO_START", True)   # arranca el motor al iniciar el proceso
+        self.retrain_on_start = _b("RETRAIN_ON_START", True)  # walk-forward al pulsar Iniciar/arrancar
         self.data_source = _s("DATA_SOURCE", "synthetic").lower()  # synthetic | exchange
         self.exchange = _s("EXCHANGE", "binance")
         self.exchange_sandbox = _b("EXCHANGE_SANDBOX", True)

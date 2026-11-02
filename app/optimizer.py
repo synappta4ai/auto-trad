@@ -61,8 +61,16 @@ def _gates(m, cfg):
     return fails
 
 
-def train_symbol(df, cfg, champion):
-    """Devuelve (nuevo_campeón|None, reporte). `champion` = {'strategy','params',...} o None."""
+def train_symbol(df, cfg, champion, progress=None):
+    """Devuelve (nuevo_campeón|None, reporte). `champion` = {'strategy','params',...} o None.
+
+    `progress`, si se pasa, recibe dicts con el avance: candidatos evaluados,
+    fold actual y decisión final. Sirve para mostrar el entrenamiento en vivo.
+    """
+    def tick(ev):
+        if progress is not None:
+            progress(ev)
+
     TR, T, K = cfg.train_window_bars, cfg.test_window_bars, cfg.wf_folds
     n = len(df)
     if n < TR + K * T + 100:
@@ -73,10 +81,15 @@ def train_symbol(df, cfg, champion):
     close = df["close"].to_numpy()
     bpy, cost = cfg.bpy, cfg.cost_side
     rets, helds = [], []
-    for name, p in cands:
+    total = len(cands)
+    step = max(1, total // 25)
+    tick({"stage": "backtest", "done": 0, "total": total, "fold": 0, "folds": K})
+    for i, (name, p) in enumerate(cands):
         ret, held = bar_returns(close, strategies.positions(name, df, p, cfg), cost)
         rets.append(ret)
         helds.append(held)
+        if (i + 1) % step == 0 or i + 1 == total:
+            tick({"stage": "backtest", "done": i + 1, "total": total, "fold": 0, "folds": K})
 
     first_test = n - K * T
     oos_r, oos_h, folds = [], [], []
@@ -90,9 +103,12 @@ def train_symbol(df, cfg, champion):
         oos_h.append(helds[b][t0:t1])
         folds.append({"strategy": cands[b][0], "params": cands[b][1], "train_sharpe": round(sc[b], 3),
                       "test": metrics(rets[b][t0:t1], helds[b][t0:t1], bpy)})
+        tick({"stage": "fold", "done": k + 1, "total": K, "fold": k + 1, "folds": K,
+              "best": {"strategy": cands[b][0], "params": cands[b][1]}})
     wf = metrics(np.concatenate(oos_r), np.concatenate(oos_h), bpy)
     fails = _gates(wf, cfg)
     report = {"status": "ok", "bars": n, "candidates": len(cands), "wf_oos": wf, "folds": folds, "gate_fails": fails}
+    tick({"stage": "decision", "done": 1, "total": 1, "fold": K, "folds": K})
 
     if fails:
         report["decision"] = "sin_ventaja"
