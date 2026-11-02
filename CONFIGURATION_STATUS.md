@@ -20,7 +20,6 @@
 | `TIMEFRAME` | `1h` | |
 | `HISTORY_BARS` | `3000` | mínimo `1500 + 3*300 + 200 = 2600` |
 | `API_BIND` / `API_PORT` | `127.0.0.1` / `8080` | API + panel |
-| `UI` | `web` | `desktop` = ventana PyQt6 |
 | `AUTO_START` | `true` | el motor arranca con el proceso |
 | `LEARNING_ENABLED` | `true` | walk-forward champion/challenger |
 | `MIN_OOS_TRADES` | `8` | puerta de validación OOS |
@@ -72,5 +71,3 @@ Todas salvo `/health` y `/ui` requieren `X-API-Token: <API_TOKEN>`.
 ## Limitaciones
 
 - No se ha probado contra un exchange real (`MODE=live`).
-- La GUI de escritorio (`UI=desktop`) necesita `uv pip install -r
-  requirements-gui.txt`; la web no.

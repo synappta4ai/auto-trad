@@ -40,16 +40,7 @@ uv lock --upgrade          # actualiza versiones dentro de los rangos permitidos
 ```
 
 - `requirements.txt` se mantiene por compatibilidad con `pip`/Docker.
-- `requirements-gui.txt` es opcional: solo PyQt6 para `UI=desktop`.
-
-## GUI de escritorio (opcional)
-
-```bash
-uv pip install -r requirements-gui.txt
-# en .env:  UI=desktop
-```
-
-El panel web no necesita PyQt6.
+- `pytest` vive en `[dependency-groups] dev`: `uv sync --dev` lo instala.
 
 ## Docker
 

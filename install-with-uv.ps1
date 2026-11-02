@@ -2,8 +2,7 @@
 # install-with-uv.ps1 - AutoTrader installation using uv
 param(
     [switch]$UseLockfile,
-    [switch]$SystemPython,
-    [switch]$WithDesktopGui
+    [switch]$SystemPython
 )
 
 Write-Host "=== AutoTrader Installation with uv ===" -ForegroundColor Cyan
@@ -28,13 +27,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 3. GUI de escritorio opcional
-if ($WithDesktopGui) {
-    Write-Host "Instalando PyQt6 (GUI de escritorio)..." -ForegroundColor Yellow
-    uv pip install -r requirements-gui.txt
-}
-
-# 4. Verificacion
+# 3. Verificacion
 Write-Host "Verificando..." -ForegroundColor Yellow
 uv run python -c "from app.config import Config; c = Config(); print('Config OK:', c.mode, c.symbols)"
 

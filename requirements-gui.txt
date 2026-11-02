@@ -1,3 +1,0 @@
-# Dependencias opcionales de la GUI de escritorio (UI=desktop).
-# El panel web (/ui) NO las necesita.
-PyQt6>=6.6.0

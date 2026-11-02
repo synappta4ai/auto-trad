@@ -11,7 +11,6 @@ Resumen de cómo está montado uv en el proyecto y por qué.
 | `.venv/` | entorno gestionado por uv (ignorado por git) |
 | `install-with-uv.ps1` | instalación y verificación en Windows |
 | `requirements.txt` | compatibilidad con pip y con la imagen Docker |
-| `requirements-gui.txt` | PyQt6 opcional para `UI=desktop` |
 
 ## Flujo
 
@@ -30,8 +29,7 @@ sistema es 2.7 y no sirve para el proyecto.
   manuales.
 - **Sin `[tool.uv] install-dir`**: provocaba un `TOML parse error` con la
   versión actual de uv y no hacía falta (uv usa `.venv` por defecto).
-- **PyQt6 fuera de las dependencias base**: la GUI de escritorio es opcional y
-  el panel web (`/ui`) no la necesita.
+- **Sin dependencias de escritorio**: el panel web (`/`) no necesita PyQt6.
 - **Docker con pip**: build más simple y sin depender de uv dentro de la imagen.
 
 ## Verificación

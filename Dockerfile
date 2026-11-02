@@ -6,7 +6,6 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=UTC \
     DATA_DIR=/data \
-    UI=web \
     API_BIND=0.0.0.0 \
     API_PORT=8080
 
@@ -21,5 +20,5 @@ USER app
 VOLUME /data
 EXPOSE 8080
 
-# Motor continuo + panel web en /ui (sin GUI de escritorio)
+# Motor continuo + panel web en /
 CMD ["python", "-m", "app.main"]

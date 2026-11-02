@@ -2,8 +2,9 @@
 
 Bot de trading para correr 24/7, en local o en Docker. Todo se configura desde
 `.env`: puerto, topes de riesgo, estrategias, frecuencia de reentrenamiento y
-reglas de auto-ajuste. Incluye un **panel web** (`/ui`) para iniciar, detener y
-pausar el motor sin tocar la consola.
+reglas de auto-ajuste. Incluye un **panel web** (`/`) para iniciar, detener y
+pausar el motor sin tocar la consola, con páginas aparte para resultados,
+configuración y logs.
 
 > **Lee esto primero.** Ningún software garantiza ganancias, y la mayoría de los sistemas automáticos retail pierden dinero tras costos. Este proyecto está diseñado para **no operar cuando no encuentra una ventaja demostrable fuera de muestra** (queda en liquidez) y para limitar pérdidas con topes duros. Eso reduce el riesgo, no lo elimina. Empieza siempre en `MODE=paper`, luego testnet del exchange y solo después, con capital que puedas perder, `live`. No es asesoría financiera.
 
@@ -32,8 +33,8 @@ pip install -r requirements.txt
 python -m app.main
 ```
 
-La GUI de escritorio es opcional y **no** hace falta para el panel web:
-`uv pip install -r requirements-gui.txt` (o `pip install -r requirements-gui.txt`).
+No hay dependencias de escritorio: el panel web lo sirve la propia API, así que
+`pip install -r requirements.txt` es todo lo que hace falta.
 
 ---
 
@@ -52,7 +53,7 @@ copy .env.example .env        # Linux/macOS: cp .env.example .env
 uv run python -m app.main
 ```
 
-- Panel de control: **http://127.0.0.1:8080/ui**
+- Panel de control: **http://127.0.0.1:8080/** (resultados en `/results`, configuración en `/config`, logs en `/logs`)
 - Salud (sin token): `http://127.0.0.1:8080/health`
 - Swagger: `http://127.0.0.1:8080/docs`
 
@@ -64,7 +65,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-El panel queda en `http://127.0.0.1:8080/ui`. El contenedor escucha en
+El panel queda en `http://127.0.0.1:8080/`. El contenedor escucha en
 `0.0.0.0:8080`; lo que se publica al host lo controla `API_HOST_BIND`
 (por defecto `127.0.0.1`). Para exponerlo en red: `API_HOST_BIND=0.0.0.0`.
 
@@ -86,24 +87,38 @@ Docker, Ctrl+C y `uv run ...` en local). El estado persiste en SQLite.
   la configuración previa.
 - **Reentrenar**: lanza un walk-forward de inmediato (no espera al siguiente
   ciclo) y el panel sigue el progreso en vivo.
+- **Aprender sin parar**: alterna aprendizaje programado ↔ continuo en caliente
+  (no hace falta reiniciar).
 - **Cerrar posiciones**: cierra todo a mercado.
 - Muestra equity, caja, drawdown, posiciones abiertas, campeón por símbolo,
   multiplicador de riesgo y los últimos eventos.
 - **Entrenamiento (walk-forward)**: barra de progreso, etapa (`backtest`,
   `fold`, `decision`), folds con su estrategia y Sharpe train/test, OOS agregado
   con los motivos de rechazo y cuenta atrás del próximo reentrenamiento.
+- **Curvas**: dos gráficas en SVG, sin librerías externas. La equity en el tiempo
+  con la línea del capital inicial, y el Sharpe OOS de cada walk-forward (punto
+  verde = pasó las puertas, rojo = `sin_ventaja`). Se alimentan de `/api/equity`
+  y `/api/learning/history`.
 - **Actividad del motor**: número de ciclo, antigüedad del último tick,
   intervalo y precio actual — sirve para distinguir "no hay señal" de "está
   parado".
+- **Logs** (`/logs`): registro del proceso en memoria (últimas 4000 líneas) con
+  filtro por nivel y por texto, más los eventos del motor.
+
+Las páginas están separadas para que cada una se lea sin ruido: `/` (control y
+estado en vivo), `/results` (veredicto en lenguaje llano, métricas de operación,
+reglas de aceptación, historial de entrenamientos y trades), `/config` (los 89
+parámetros editables) y `/logs` (proceso y eventos). `/ui` redirige a `/` para no
+romper enlaces antiguos.
 
 `.env` se carga automáticamente al ejecutar desde la raíz del proyecto. Las
 variables ya definidas en el entorno tienen prioridad (así manda Docker).
 
 | Variable | Default | Qué hace |
 | --- | --- | --- |
-| `UI` | `web` | `web` = panel en el navegador · `desktop` = ventana PyQt6 |
 | `AUTO_START` | `true` | arranca el motor al iniciar el proceso |
 | `RETRAIN_ON_START` | `true` | entrena al arrancar (o al pulsar *Iniciar*) |
+| `TRAIN_MODE` | `scheduled` | `continuous` = aprendizaje sin parar (ver 5.3) |
 | `API_BIND` / `API_PORT` | `127.0.0.1` / `8080` | dónde escucha la API y el panel |
 | `DATA_DIR` | `./data` (`/data` en Docker) | carpeta de la base SQLite |
 
@@ -140,9 +155,8 @@ Un solo proceso: un hilo con el motor y un servidor HTTP (FastAPI) que sirve la
 API y el panel web. Estado persistente en SQLite (`DATA_DIR`, `/data` en
 Docker), por lo que un reinicio retoma posiciones, campeones y contadores.
 
-**Interfaz:** panel web `/ui` (HTML + JS, sin build ni dependencias de front) y,
-opcionalmente, GUI de escritorio PyQt6 con `UI=desktop`
-(`requirements-gui.txt`). Ambas usan los mismos endpoints.
+**Interfaz:** panel web en `/` (HTML + JS, sin build ni dependencias de front),
+servido por la propia API. No hay capa de escritorio: un solo proceso.
 
 **Lenguaje:** Python (numpy/pandas vectorizados). El cuello de botella real en velas de 5m o más es la red del exchange, no el cálculo; un entrenamiento completo de ~20 combinaciones por símbolo tarda del orden de décimas de segundo. Si necesitaras latencia de milisegundos (HFT) este diseño no es el adecuado.
 
@@ -192,11 +206,35 @@ fold 3:              [── entrena (1500) ──][─ test 300 ─]   ← más
 
 En cada fold se elige la mejor combinación (estrategia + parámetros) **solo con la ventana de entrenamiento** y se mide en el test siguiente, que esa elección nunca vio. Los tres tests concatenados (OOS) estiman si _el procedimiento_ tiene ventaja real, no si una combinación se ajustó al pasado.
 
+La medición del OOS **simula la ejecución real** (`app/sim.py`): stop ATR,
+sizing por riesgo, topes de posición/exposición, cooldown y costos del
+`PaperBroker`, vela a vela. Así la puerta juzga el procedimiento completo y no
+solo la señal: si el stop o el sizing destruyen la ventaja, el OOS lo muestra.
+Entre la ventana de entrenamiento y la de test hay un **embargo** de
+`ML_HORIZON` velas (`EMBARGO_BARS`) para que las etiquetas solapadas del modelo
+no filtren información del test al train.
+
 ### 5.2 Puertas (gates) y champion/challenger
 
-1. **Puerta de ventaja:** el OOS agregado debe cumplir `MIN_OOS_TRADES`, `MIN_OOS_SHARPE`, `MIN_OOS_PROFIT_FACTOR` y `MAX_OOS_DRAWDOWN_PCT`. Si falla → decisión `sin_ventaja`: no se promueve nada y, con `DEMOTE_ON_FAIL=true`, se **retira al campeón** actual (el símbolo queda en liquidez).
+1. **Puerta de ventaja:** el OOS agregado debe cumplir `MIN_OOS_TRADES`, `MIN_OOS_SHARPE`, `MIN_OOS_PROFIT_FACTOR` y `MAX_OOS_DRAWDOWN_PCT` (Sharpe y drawdown por vela; profit factor, win rate y R medio **por operación**). Con `REQUIRE_BEAT_BENCHMARK=true` además debe superar a comprar y mantener el activo en el mismo tramo. Si falla → decisión `sin_ventaja`: no se promueve nada y, con `DEMOTE_ON_FAIL=true`, se **retira al campeón** actual (el símbolo queda en liquidez).
 2. Si pasa, el **retador** es la mejor elección del último fold. Si no hay campeón, se promueve. Si hay uno, el retador debe superar su Sharpe en el último tramo OOS por `PROMOTE_MARGIN_PCT` (evita cambiar por ruido).
 3. Decisiones posibles: `promovido_sin_campeon`, `retador_promovido`, `campeon_confirmado`, `campeon_se_mantiene`, `sin_ventaja`, `sin_ventaja_campeon_retirado`, `datos_insuficientes`.
+
+**Cómo validar que el entrenamiento sirve.** Cada walk-forward queda en la tabla
+`learning_reports` y se consulta con `GET /learning/history?symbol=BTC%2FUSDT&limit=100`
+(el panel lo dibuja).
+
+- Éxito = `decision` sin `sin_ventaja` y `gate_fails` vacío. Con datos reales, un
+  `sin_ventaja` significa que el procedimiento no tiene ventaja en ese tramo, no
+  que el entrenamiento falló.
+- Sobreajuste: `train_sharpe` alto con el Sharpe de test plano o negativo fold a
+  fold. Si el test acompaña al train, hay señal.
+- Progreso: la serie de `wf_oos.sharpe`, `pf` y `excess_vs_bh_pct` sobre velas
+  nuevas. Reentrenar sobre las mismas velas repite el mismo resultado: eso no es
+  avance, es CPU.
+- `DATA_SOURCE=synthetic` no valida nada (es un proceso autorregresivo, sirve
+  para probar el sistema sin red). Para medir en serio: `DATA_SOURCE=exchange`,
+  `HISTORY_BARS` que cubra las ventanas y `TRAIN_MODE=scheduled`.
 
 Cuando cambia el campeón, el bot espera la siguiente señal nueva antes de abrir (no entra a mitad de movimiento).
 
@@ -205,6 +243,7 @@ Cuando cambia el campeón, el bot espera la siguiente señal nueva antes de abri
 | Disparador                                                          | Control                                                   |
 | ------------------------------------------------------------------- | --------------------------------------------------------- |
 | Programado                                                          | `RETRAIN_INTERVAL_HOURS`                                  |
+| Continuo (sin parar)                                                | `TRAIN_MODE=continuous` o botón *Aprender sin parar*      |
 | Deriva de volatilidad (corta/larga ≥ `DRIFT_VOL_RATIO` o ≤ 1/ratio) | `RETRAIN_ON_DRIFT`, `DRIFT_SHORT_BARS`, `DRIFT_LONG_BARS` |
 | Racha de pérdidas                                                   | `DRIFT_LOSS_STREAK`                                       |
 | Mínimo entre reentrenos por deriva                                  | `DRIFT_MIN_HOURS`                                         |
@@ -212,6 +251,28 @@ Cuando cambia el campeón, el bot espera la siguiente señal nueva antes de abri
 | Arranque                                                            | al iniciar el motor (`AUTO_START=true` o botón *Iniciar*)  |
 
 `LEARNING_ENABLED=false` desactiva todo esto y usa `FIXED_STRATEGY` con el primer valor de cada rejilla.
+
+#### Aprendizaje continuo
+
+`TRAIN_MODE=continuous` (o el botón **Aprender sin parar** del panel) encadena
+walk-forwards sin esperar al programado:
+
+| Variable                | Default     | Qué hace                                                             |
+| ----------------------- | ----------- | -------------------------------------------------------------------- |
+| `TRAIN_MODE`            | `scheduled` | `continuous` = reentrena en cuanto termina el anterior                |
+| `TRAIN_COOLDOWN_SECONDS`| `0`         | espera entre entrenamientos; `0` = encadenar                         |
+| `TRAIN_MIN_NEW_BARS`    | `1`         | velas nuevas necesarias antes de volver a entrenar; `0` = no esperar |
+
+Dos avisos honestos:
+
+- **Reentrenar sin datos nuevos repite el mismo cálculo.** Con
+  `TRAIN_MIN_NEW_BARS=1` cada pasada usa velas que no había visto; con `0` el
+  motor se queda en bucle caliente sin aprender nada nuevo.
+- Lo que hace "intensivo" el aprendizaje no es la frecuencia sino el espacio de
+  búsqueda: rejillas más amplias en `.env` (`EMA_FAST`, `EMA_SLOW`,
+  `RSI_*`, `BREAKOUT_*`, `ML_*`) y `MAX_CANDIDATES`. Con la rejilla del repo,
+  cada pasada evalúa ~260 combinaciones y tarda ~6-8 s por símbolo, porque
+  ahora simula la ejecución completa (stop, sizing y costos).
 
 ### 5.4 Ajuste automático del riesgo (sin reentrenar)
 
@@ -241,16 +302,40 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 
 ## 7. API (cabecera `X-API-Token`)
 
-| Endpoint                                             | Función                                                                                    |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `GET /health`                                        | Estado básico (sin token; lo usa el healthcheck de Docker)                                 |
-| `GET /ui`                                            | Panel web de control (sin token: el token va embebido en la página)                        |
-| `GET /status`                                        | Equity, caja, drawdown, posiciones, campeones, multiplicadores de riesgo                   |
-| `GET /learning`                                      | Último reporte walk-forward por símbolo: folds, métricas OOS, decisión, motivos de rechazo |
-| `GET /trades?limit=` · `GET /equity` · `GET /events` | Historial                                                                                  |
-| `GET /config`                                        | Configuración efectiva (secretos ocultos)                                                  |
-| `POST /start` · `/stop`                              | Arranca / detiene el bucle continuo del motor                                              |
-| `POST /retrain` · `/halt` · `/resume` · `/close_all` | Control manual                                                                             |
+| Endpoint                                                            | Función                                                                                       |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `GET /` · `/results` · `/config` · `/logs`                          | Páginas HTML: panel, resultados, configuración y logs (sin token: va embebido en la página)    |
+| `GET /api/health`                                                   | Estado básico (sin token; lo usa el healthcheck de Docker)                                     |
+| `GET /api/status`                                                   | Equity, caja, drawdown, posiciones, campeones, multiplicadores de riesgo                      |
+| `GET /api/learning`                                                 | Último reporte walk-forward por símbolo: folds, métricas OOS, decisión, motivos de rechazo    |
+| `GET /api/learning/history?symbol=&limit=`                          | Historial de walk-forwards (decisiones, OOS y benchmark en el tiempo)                          |
+| `GET /api/trades?limit=` · `/api/equity` · `/api/events`            | Historial de operaciones, curva de equity y eventos del motor                                  |
+| `GET /api/logs?level=&q=&limit=`                                    | Registro del proceso en memoria (últimas 4000 líneas), filtrable por nivel y texto             |
+| `GET /api/config`                                                   | Configuración efectiva (secretos ocultos)                                                     |
+| `GET /api/settings` · `POST /api/settings`                          | Parámetros editables: lista con valores actuales y guardado en `.env`                          |
+| `GET /api/presets` · `POST /api/presets/apply?pid=`               | Recetas de configuración con objetivo concreto (iterar rápido, ampliar la búsqueda, estricto…) |
+| `GET /api/data` · `GET /api/lab`                                   | Velas guardadas en local y estado del laboratorio                                              |
+| `POST /api/lab/fetch` · `POST /api/lab/train?symbol=&bars=`        | Descargar histórico / entrenar walk-forward sobre la caché, sin tocar al bot                    |
+| `POST /api/start` · `/api/stop`                                     | Arranca / detiene el bucle continuo del motor                                                 |
+| `POST /api/retrain` · `/api/halt` · `/api/resume` · `/api/close_all` | Control manual                                                                               |
+| `POST /api/train_mode?mode=scheduled\|continuous`                   | Cambia el modo de aprendizaje en caliente                                                     |
+
+Las páginas `/`, `/results`, `/config` y `/logs` son HTML y no piden cabecera. Los nombres antiguos de los endpoints (`/status`, `/learning`, `/trades`, `/equity`, `/events`, `/settings`, `/start`, `/stop`, `/retrain`, `/train_mode`, `/halt`, `/resume`, `/close_all`, `/health`) siguen respondiendo como alias sin documentar, pero **`/config` y `/logs` ahora son páginas**: sus datos están en `/api/config` y `/api/logs`.
+
+### Recetas y laboratorio
+
+La página `/config` empieza con dos bloques pensados para llegar antes a una conclusión:
+
+- **Recetas**: paquetes de parámetros con un objetivo declarado («iterar en segundos», «que la rejilla opere»,
+  «ampliar la búsqueda», «veredicto inmediato», «solo lo que aguanta», «dejarlo corriendo»). Cada tarjeta dice
+  para qué sirve, lo que tarda, qué cambia y qué tiene de trampa; se aplican con `POST /api/presets/apply?pid=`,
+  que valida, guarda en `.env` y entra en caliente (avisando de lo que exija reinicio).
+- **Laboratorio**: las velas que descarga el bot se guardan en SQLite (`candles`). `POST /api/lab/fetch` baja
+  histórico ahora y `POST /api/lab/train` lanza un walk-forward completo sobre esa caché en segundos, sin
+  esperar al mercado ni al ciclo de 24 h y **sin tocar campeones, posiciones ni el estado del motor**. El
+  reporte queda en el historial con `reason: laboratorio`.
+
+Así se itera: descargar → entrenar → leer el veredicto → cambiar una receta o un parámetro → repetir.
 
 Documentación interactiva en `/docs` (Swagger). Por defecto el puerto solo escucha en `127.0.0.1`; para acceder remotamente usa un túnel SSH (`ssh -L 8080:127.0.0.1:8080 servidor`) o un reverse proxy con TLS. Si pones `API_BIND=0.0.0.0` sin proteger el puerto, cualquiera con tu token podría operar el bot.
 
@@ -260,13 +345,26 @@ Documentación interactiva en `/docs` (Swagger). Por defecto el puerto solo escu
 
 Checklist, en orden, sin saltarte pasos:
 
-1. `DATA_SOURCE=exchange`, `MODE=paper`: deja correr **semanas**. Revisa `/learning`, `/trades`, `/equity`. ¿Hay ventaja o el bot casi no opera? Si casi no opera, es la señal de que no halló ventaja, no un fallo.
+1. `DATA_SOURCE=exchange`, `MODE=paper`: deja correr **semanas**. Revisa `/results` (o `/api/learning`, `/api/trades`, `/api/equity`). ¿Hay ventaja o el bot casi no opera? Si casi no opera, es la señal de que no halló ventaja, no un fallo.
 2. `MODE=live` + `EXCHANGE_SANDBOX=true` con claves del _testnet_ y `LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`: verifica que las órdenes, saldos y cierres cuadran.
 3. Claves API del exchange real **solo con permiso de trading, sin retiros**, y restringidas por IP del servidor.
 4. `EXCHANGE_SANDBOX=false`, `INITIAL_CAPITAL` pequeño (dinero que puedas perder entero) y topes conservadores.
 5. Escala solo si el comportamiento real coincide con el simulado durante un periodo largo.
 
 En live, `INITIAL_CAPITAL` es el capital asignado al bot: el motor nunca usa más que eso aunque la cuenta tenga más saldo.
+
+### Protección de la posición en live
+
+El motor **no deja una posición desnuda**: al abrir coloca un stop `stop_market` en el exchange (`NATIVE_STOPS=true`) que sobrevive a la caída del proceso, la red o el servidor. Si el exchange rechaza ese stop, la posición se cierra en el acto (`protect_failed`): es preferible no operar a operar sin protección. El stop por software que se revisa cada `POLL_SECONDS` sigue activo como respaldo y es el único que existe en paper.
+
+Al arrancar, `RECONCILE_ON_START` pone el estado de acuerdo con el exchange antes de operar:
+
+- cancela órdenes huérfanas que llevan nuestro `CLIENT_ID_PREFIX` (un stop viejo con otra cantidad podría cerrar la posición nueva);
+- si el exchange tiene **menos** cantidad que el estado local, asume que el stop nativo se ejecutó y ajusta hacia abajo;
+- recoloca el stop nativo si falta;
+- **nunca inventa posiciones** a partir del saldo: el BTC de la cuenta puede ser tuyo, no del bot.
+
+Si el exchange no responde durante la reconciliación, el motor arranca **haltado** en lugar de adivinar. El `watchdog` avisa (`/api/events`) cuando el ciclo deja de avanzar más de `WATCHDOG_STALL_SECONDS` y, solo si pones `WATCHDOG_FLATTEN=true`, cierra todo lo abierto.
 
 ---
 
@@ -302,19 +400,31 @@ Para reiniciar desde cero el capital simulado: `docker compose down -v` y
 levantar de nuevo (en local basta con borrar `data/autotrader.db` con el motor
 detenido).
 
+### Configurar desde el panel
+
+La página `/config` lista 89 parámetros (símbolos, riesgo, costes, ventanas de entrenamiento, rejillas de estrategias, protección y autoajuste) con su valor actual. Al guardar:
+
+- se valida sobre una copia de la configuración, incluidas las comprobaciones cruzadas (por ejemplo `HISTORY_BARS` frente a las ventanas del walk-forward): si algo no cuadra no se guarda nada y el panel muestra **todos** los errores juntos;
+- se reescribe **solo la clave cambiada** en `.env`, conservando comentarios y el resto de líneas, con copia de seguridad en `.env.bak`;
+- se aplica al instante si el motor lo lee en cada ciclo (riesgo, costes, símbolos, aprendizaje, watchdog). Lo que se construye una vez al arrancar (modo, fuente de datos, exchange, temporalidad, puerto, capital inicial, prefijo de órdenes, activar el watchdog) lleva la etiqueta **reinicio** y entra en vigor al reiniciar el proceso;
+- añadir un símbolo lo incorpora al feed y pide un reentrenamiento para que tenga campeón; quitarlo exige que no haya posición abierta en él.
+
+`EXCHANGE_API_KEY`, `EXCHANGE_API_SECRET`, `API_TOKEN` y `LIVE_CONFIRM` no aparecen en el panel: se editan a mano en `.env`. Pasar a `MODE=live` desde el panel solo funciona si esas tres cosas ya están configuradas; si no, la validación lo rechaza y explica qué falta.
+
 ---
 
 ## 10. Limitaciones conocidas (léelas)
 
-- **El backtest del optimizador es vectorizado y no incluye el stop ATR ni el dimensionamiento**: mide la calidad de la _señal_ con costos (comisión, slippage, spread) por cambio de posición. El stop y el sizing actúan en vivo como capa de riesgo, por lo que el resultado real difiere del backtest.
-- **Sharpe y profit factor se calculan por vela**, no por operación: son aproximaciones útiles para filtrar, no estadísticas finas.
+- **El backtest simula la ejecución, pero sigue siendo una aproximación**: replica stop ATR, sizing, topes, cooldown y costos sobre velas cerradas. No modela huecos de liquidez, latencia, funding ni la diferencia entre el precio de la vela y el fill real; y el stop se vigila por vela, no intrabar. Los fills usan el cierre (o el open si hay hueco), no el libro de órdenes.
+- **Sharpe y drawdown se calculan por vela**; el profit factor, el win rate y el R medio sí son por operación. Son aproximaciones útiles para filtrar, no estadísticas finas.
 - **Riesgo de sobreajuste por selección múltiple:** probar muchas combinaciones siempre puede producir alguna que parezca buena por azar. Las puertas OOS y el margen de promoción lo reducen, no lo eliminan. Mantén las rejillas pequeñas.
-- **Los stops en live los vigila el software** (cada `POLL_SECONDS`), no son órdenes nativas del exchange. Si el servidor o la red caen, la posición queda sin protección. Para producción seria añade stops nativos del exchange.
-- **Live es spot, long-only, órdenes de mercado, un solo exchange y una sola moneda cotizada.** La conciliación con el exchange es mínima: se limita la venta al saldo disponible y se registran eventos `partial_close` o `reconcile_needed` si algo no cuadra. Revisa `/events`.
-- El entrenamiento corre en el mismo hilo del motor; con rejillas muy grandes pausa el ciclo unos segundos (`MAX_CANDIDATES` lo acota).
+- **Los stops en live son órdenes nativas del exchange** (`NATIVE_STOPS=true`), así que siguen protegiendo si el proceso muere; el software solo actúa de respaldo y es el que cierra en paper. Lo que **no** está resuelto: el stop nativo no se reajusta si el ATR cambia (queda al nivel de la entrada) y un cierre parcial no se distingue de un stop ejecutado más allá de la cantidad.
+- **Live es spot, long-only, órdenes de mercado, un solo exchange y una sola moneda cotizada.** La reconciliación es conservadora: corrige cantidades hacia abajo y cancela órdenes huérfanas, pero si alguien cierra la posición a mano, el estado la elimina y avisa (`reconcile_needed`) — el PnL de ese tramo no se reconstruye. Revisa `/logs`.
+- El entrenamiento corre en el mismo hilo del motor: con rejillas muy grandes pausa el ciclo unos segundos. `MAX_CANDIDATES` lo acota, `PARALLEL_WORKERS` reparte los candidatos entre núcleos (0 = automático, 1 = en serie) y el walk-forward solo simula el tramo que después puntúa — el reporte lo dice en `warmup_bars` y `sim_bars`.
 - Los datos `synthetic` son un generador de prueba, **no** son mercado real; sirven para validar el mecanismo, no la rentabilidad.
-- Qué se probó y qué no: motor y bucle continuo, `start/stop/pause` por API y panel, walk-forward, stops, contabilidad y el panel web renderizado en navegador, además de `docker compose config`. Se verificó el ciclo completo de trading en paper sintético (apertura → cierre por stop → actualización de cash/equity y trade en SQLite). **No** se construyó la imagen Docker en esta máquina ni se probó contra un exchange real.
-- El panel web embebe el `API_TOKEN` en el HTML (por eso `/ui` no pide cabecera). No lo publiques sin TLS ni autenticación delante: usa túnel SSH o un reverse proxy. Si el token no te sirve para eso, define uno propio y no expongas el puerto.
+- Qué se probó y qué no: 69 tests automatizados (estrategias sin lookahead, sizing, simulador, puertas del walk-forward, client order ids, stops nativos, reconciliación, watchdog y el editor de configuración) y el ciclo completo en paper sintético (apertura → cierre por stop → cash/equity → trade en SQLite). **No** se construyó la imagen Docker en esta máquina ni se probó contra un exchange real: la capa live se validó con un exchange falso, así que el primer paso en `EXCHANGE_SANDBOX=true` es mirar `/events` y comprobar que `protect`, `reconcile` y los cierres cuadran.
+- **El panel escribe en `.env`**, así que necesita permiso de escritura sobre ese archivo (con Docker, no lo montes como `:ro`). No hay historial de cambios más allá de `.env.bak`, que se sobrescribe en cada guardado. Un cambio guardado pero marcado «reinicio» **no** está activo hasta que reinicies: si algo parece no aplicarse, mira esa etiqueta.
+- Las páginas (`/`, `/results`, `/config`, `/logs`) embeben el `API_TOKEN` en el HTML (por eso no piden cabecera). No lo publiques sin TLS ni autenticación delante: usa túnel SSH o un reverse proxy. Si el token no te sirve para eso, define uno propio y no expongas el puerto.
 
 ---
 
@@ -329,8 +439,7 @@ Dockerfile
 start-autotrader.bat      arranque en un clic (Windows) + abre el panel
 start-autotrader.ps1      ídem en PowerShell
 install-with-uv.ps1       instalación/verificación con uv
-requirements.txt          dependencias base (pip)
-requirements-gui.txt      PyQt6 opcional para UI=desktop
+requirements.txt          dependencias base (pip, compatibilidad con Docker)
 .env                      configuración activa (copia de .env.example)
 CONFIGURATION_STATUS.md   estado actual de la configuración
 README_UV.md              documentación de uv
@@ -339,13 +448,19 @@ app/
   config.py           carga de .env, valores y validación
   data.py             feed sintético y feed ccxt
   strategies.py       indicadores y las 4 estrategias
-  optimizer.py        backtest vectorizado + walk-forward + champion/challenger
+  sizing.py           fórmulas de sizing y stop/tp (motor + simulador)
+  sim.py              simulación de la ejecución bar a bar para el walk-forward
+  optimizer.py        walk-forward con ejecución simulada + champion/challenger
   regime.py           deriva y multiplicador de riesgo
   engine.py           ciclo, entradas/salidas, topes, kill switch, start/stop
-  broker.py           paper y ccxt
-  api.py              API FastAPI + panel web en /ui
-  gui.py              dashboard PyQt6 opcional (UI=desktop)
-  main.py             arranque: motor + uvicorn (+ GUI opcional)
+  broker.py           paper y ccxt (órdenes, stops nativos, client order id)
+  reconcile.py        conciliación con el exchange al arrancar (solo live)
+  watchdog.py         avisa si el ciclo del motor deja de avanzar
+  settings.py         parámetros editables desde el panel: validación, .env y aplicación en caliente
+  api.py              API FastAPI (/api/*) + páginas web (/, /results, /config, /logs)
+  logs.py             buffer en memoria del registro del proceso (página /logs)
+  main.py             arranque: motor + uvicorn
+tests/                suite de pytest (sin red ni .env)
 ```
 
 ---
@@ -358,6 +473,7 @@ app/
 uv sync                                  # instala/actualiza dependencias
 uv run python -m app.main                # motor + API + panel
 uv run python -c "from app.config import Config; print(Config().public())"
+uv run --with pytest pytest -q           # tests (sin red; ignora el .env)
 uv add <paquete>                         # nueva dependencia (pyproject + uv.lock)
 ```
 

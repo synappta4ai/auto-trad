@@ -1,4 +1,6 @@
 .env
+.env.bak
+.env.tmp
 data/
 __pycache__/
 *.pyc

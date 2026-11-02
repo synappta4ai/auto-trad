@@ -7,8 +7,9 @@ import time
 
 import pandas as pd
 
-from . import optimizer, regime, strategies
-from .broker import NoBalance
+from . import optimizer, regime, sizing, strategies
+from .broker import NoBalance, client_id
+from .reconcile import run_reconcile
 from .strategies import atr
 
 log = logging.getLogger("engine")
@@ -29,7 +30,8 @@ class Engine:
         self._snap_cache = None
         self.retrain_flag = False
         self.retrain_reason = None
-        self.retrain_flag = False
+        self.train_mode = cfg.train_mode   # scheduled | continuous (se puede cambiar en caliente)
+        self.last_busy_at = 0.0            # fin del último entrenamiento (para el cooldown)
         self.prices, self.bar_ts = {}, {}
         self.last_equity_log = 0.0
         S = store.get("state")
@@ -52,6 +54,10 @@ class Engine:
                             "tick": 0, "last_tick": 0, "poll_seconds": cfg.poll_seconds,
                             "learning_enabled": cfg.learning_enabled,
                             "retrain_interval_hours": cfg.retrain_interval_hours,
+                            "train_mode": self.train_mode, "trainings": int(S.get("trainings", 0)),
+                            "bars_since_train": 0, "train_min_new_bars": cfg.train_min_new_bars,
+                            "train_cooldown_seconds": cfg.train_cooldown_seconds,
+                            "last_busy_at": 0.0,
                             "training": dict(self.train_state)}
 
     # ------------------------------------------------------------------ utilidades
@@ -88,6 +94,24 @@ class Engine:
             self.running = True
             self._event("start", {"mode": self.cfg.mode, "symbols": self.cfg.symbols})
             self.store.put("state", self.S)
+            if self.cfg.reconcile_on_start:
+                try:
+                    rep = run_reconcile(self)
+                    if rep.get("status") != "skipped":
+                        self._event("reconcile", rep)
+                    if rep.get("status") == "needs_attention":
+                        # sigue el bucle (los stops por software gestionan lo abierto),
+                        # pero no se abren posiciones nuevas hasta revisarlo
+                        self.S.update(halted=True, halt_reason="reconciliacion_incompleta")
+                        log.error("reconciliación incompleta: no se abren posiciones nuevas")
+                except Exception as ex:
+                    # sin saber qué hay en el exchange no se opera: fallar en cerrado
+                    log.exception("reconciliación fallida: no se arranca")
+                    self.S.update(halted=True, halt_reason="reconciliacion_fallida")
+                    self._event("halt", {"reason": "reconciliacion_fallida", "error": str(ex)})
+                    self.store.put("state", self.S)
+                    self.running = False
+                    return False
         self._thread = threading.Thread(target=self.run, name="engine", daemon=True)
         self._thread.start()
         return True
@@ -196,34 +220,63 @@ class Engine:
         a = float(atr(df, cfg.atr_period).iloc[-1])
         if not math.isfinite(a) or a <= 0:
             return
-        stop_dist = a * cfg.stop_atr_mult
         eq = self._equity()
         mult = S["risk_mult"].get(sym, 1.0)
-        qty = eq * cfg.risk_per_trade_pct / 100 * mult / stop_dist
-        max_notional = min(eq * cfg.max_position_pct / 100, eq * cfg.max_total_exposure_pct / 100 - self._exposure())
-        if side > 0:
-            max_notional = min(max_notional, S["cash"] * 0.995)
-        qty = min(qty, max(0.0, max_notional) / price)
-        if qty * price < cfg.min_notional:
-            log.info("entrada %s omitida: nocional %.2f < MIN_NOTIONAL %.2f", sym, qty * price, cfg.min_notional)
+        qty = sizing.entry_qty(cfg, eq, S["cash"], self._exposure(), price, a, mult, side)
+        if qty <= 0:
+            log.info("entrada %s omitida: tope de exposición o nocional < MIN_NOTIONAL %.2f", sym, cfg.min_notional)
             return
-        fill, fee, q = self.broker.execute(sym, side, qty, price)
+        fill, fee, q = self.broker.execute(sym, side, qty, price, cid=self._cid(sym, "open"))
         S["cash"] += (-q * fill - fee) if side > 0 else (q * fill - fee)
+        stop, tp = sizing.stop_and_tp(cfg, fill, side, a)
         champ = S["champions"].get(sym) or {}
         S["positions"][sym] = {
-            "side": side, "qty": q, "entry": fill, "fee": fee, "stop": fill - side * stop_dist,
-            "tp": (fill + side * stop_dist * cfg.take_profit_rr) if cfg.take_profit_rr > 0 else None,
+            "side": side, "qty": q, "entry": fill, "fee": fee, "stop": stop, "tp": tp,
             "opened_bar": self.bar_ts[sym], "opened_at": time.time(),
-            "strategy": champ.get("strategy"), "params": champ.get("params"), "risk_mult": mult}
+            "strategy": champ.get("strategy"), "params": champ.get("params"), "risk_mult": mult,
+            "stop_order_id": None}
         S["trades_today"] += 1
         self._event("open", {"symbol": sym, "side": side, "qty": q, "price": fill, "stop": S["positions"][sym]["stop"],
                              "tp": S["positions"][sym]["tp"], "risk_mult": mult, "strategy": champ.get("strategy")})
+        self._protect(sym)
+
+    def _cid(self, sym, kind):
+        return client_id(self.cfg, sym, kind)
+
+    def _protect(self, sym):
+        """Stop nativo en el exchange. Si no se puede colocar, se cierra la
+        posición: es preferible no operar a operar sin protección."""
+        pos = self.S["positions"].get(sym)
+        if not pos or not (self.cfg.native_stops and self.cfg.mode == "live"):
+            return None
+        try:
+            oid = self.broker.protect(sym, pos["side"], pos["qty"], pos["stop"], self._cid(sym, "stop"))
+        except Exception as ex:
+            log.error("stop nativo falló en %s: %s", sym, ex)
+            self._event("protect_failed", {"symbol": sym, "error": str(ex),
+                                           "msg": "se cierra la posición: no se opera sin protección"})
+            self._close(sym, self.prices.get(sym, pos["entry"]), "protect_failed")
+            return None
+        if not oid:
+            log.warning("el exchange no devolvió id para el stop de %s", sym)
+            return None
+        pos["stop_order_id"] = oid
+        self._event("protect", {"symbol": sym, "order_id": oid, "stop": pos["stop"]})
+        return oid
 
     def _close(self, sym, ref, reason):
         cfg, S = self.cfg, self.S
         pos = S["positions"][sym]
+        if pos.get("stop_order_id"):
+            # se cancela antes de vender para que el stop no compita con el cierre
+            try:
+                self.broker.cancel(sym, pos["stop_order_id"])
+            except Exception as ex:
+                log.warning("no se pudo cancelar el stop nativo de %s: %s", sym, ex)
+            pos["stop_order_id"] = None
         try:
-            fill, fee, q = self.broker.execute(sym, -pos["side"], pos["qty"], ref)
+            fill, fee, q = self.broker.execute(sym, -pos["side"], pos["qty"], ref,
+                                               cid=self._cid(sym, "close"), reduce_only=True)
         except NoBalance as ex:
             # el exchange no tiene saldo para cerrar: se retira del estado y se avisa para conciliar a mano
             del S["positions"][sym]
@@ -239,6 +292,8 @@ class Engine:
             self._event("partial_close", {"symbol": sym, "closed_qty": q, "remaining_qty": pos["qty"]})
         else:
             del S["positions"][sym]
+        if sym in S["positions"]:
+            self._protect(sym)   # cierre parcial: el resto sigue necesitando stop
         if pnl < 0:
             S["cooldown"][sym] = self.bar_ts.get(sym, 0) + cfg.cooldown_bars * cfg.tf_seconds * 1000
         self.store.add_trade({"symbol": sym, "side": pos["side"], "qty": q, "entry": pos["entry"], "exit": fill, "pnl": pnl,
@@ -297,10 +352,18 @@ class Engine:
                 S["champions"].setdefault(sym, {"strategy": name, "params": first, "fixed": True})
             return
         lt, reason = S["last_train"], None
+        new_bars = self._bars_since_train(dfs)
+        S["bars_since_train"] = new_bars
         if self.retrain_flag:
             reason = self.retrain_reason or "manual"
         elif lt is None:
             reason = "inicial"
+        elif self.train_mode == "continuous":
+            # Aprendizaje continuo: si hay datos nuevos (o no se exige), se
+            # reentrena otra vez en cuanto pasa el cooldown.
+            ready = now - self.last_busy_at >= cfg.train_cooldown_seconds
+            if ready and (cfg.train_min_new_bars <= 0 or new_bars >= cfg.train_min_new_bars):
+                reason = "continuo"
         elif now - lt >= cfg.retrain_interval_hours * 3600:
             reason = "programado"
         elif cfg.retrain_on_drift and now - lt >= cfg.drift_min_hours * 3600:
@@ -316,7 +379,6 @@ class Engine:
         self.train_state = {"status": "running", "stage": "preparando", "done": 0, "total": 0,
                             "fold": 0, "folds": cfg.wf_folds, "symbol": None, "reason": reason,
                             "started": now, "symbols": list(dfs), "symbol_index": 0}
-        self._event("train_start", {"reason": reason, "symbols": list(dfs), "folds": cfg.wf_folds})
         try:
             for idx, (sym, df) in enumerate(dfs.items()):
                 t0 = time.time()
@@ -332,6 +394,8 @@ class Engine:
                 new, rep = optimizer.train_symbol(df, cfg, old, progress=progress)
                 rep.update(reason=reason, at=now, seconds=round(time.time() - t0, 2))
                 S["learning"][sym] = rep
+                self.store.add_learning_report(sym, rep)
+                S.setdefault("train_bar_ts", {})[sym] = int(df.index[-1].timestamp())
                 same = (old or {}).get("strategy") == (new or {}).get("strategy") and (old or {}).get("params") == (new or {}).get("params")
                 S["champions"][sym] = new
                 if not same:
@@ -341,6 +405,8 @@ class Engine:
                                       "champion": None if new is None else {"strategy": new["strategy"], "params": new["params"]},
                                       "gate_fails": rep.get("gate_fails")})
             S["last_train"] = now
+            S["trainings"] = int(S.get("trainings", 0)) + 1
+            self.last_busy_at = time.time()
             self.train_state = {"status": "idle", "stage": "completado", "done": 1, "total": 1,
                                 "fold": cfg.wf_folds, "folds": cfg.wf_folds,
                                 "symbol": None, "reason": reason,
@@ -372,16 +438,49 @@ class Engine:
             self._event("resume", {"equity": eq})
             self.store.put("state", self.S)
 
-    def close_all(self):
+    def flatten(self, reason="manual"):
+        """Cierra todo lo abierto. Lo usa el kill switch, la API y el watchdog."""
         with self.lock:
             for sym in list(self.S["positions"]):
-                self._close(sym, self.prices.get(sym, self.S["positions"][sym]["entry"]), "manual")
+                try:
+                    price = self.prices.get(sym) or self.feed.last_price(sym)
+                    self._close(sym, price, reason)
+                except Exception:
+                    log.exception("no se pudo cerrar %s (%s)", sym, reason)
             self.store.put("state", self.S)
+
+    def close_all(self):
+        self.flatten("manual")
 
     def request_retrain(self):
         self.retrain_flag = True
         self.retrain_reason = "manual"
         self.wake_ev.set()
+
+    def set_train_mode(self, mode):
+        """Cambia entre aprendizaje programado y continuo, en caliente."""
+        mode = (mode or "").strip().lower()
+        if mode not in ("scheduled", "continuous"):
+            raise ValueError("modo inválido: usa 'scheduled' o 'continuous'")
+        with self.lock:
+            self.train_mode = mode
+            self.last_busy_at = 0.0   # que el próximo ciclo arranque ya
+        self._event("train_mode", {"mode": mode})
+        self.wake_ev.set()
+        return mode
+
+    def _bars_since_train(self, dfs):
+        """Velas nuevas desde el último entrenamiento (el mínimo entre símbolos)."""
+        cfg, seen = self.cfg, self.S.get("train_bar_ts") or {}
+        out = []
+        for sym, df in dfs.items():
+            prev = seen.get(sym)
+            if prev is None:
+                out.append(cfg.history_bars)
+                continue
+            ts = int(df.index[-1].timestamp())
+            out.append(max(0, int(round((ts - prev) / cfg.tf_seconds))))
+        return min(out) if out else 0
 
     def snapshot(self):
         # Durante un entrenamiento el lock está tomado: en vez de bloquear la
@@ -389,7 +488,8 @@ class Engine:
         if not self.lock.acquire(timeout=0.05):
             snap = dict(self._snap_cache or {})
             snap.update(busy=True, running=self.running, training=dict(self.train_state),
-                        tick=self.tick_count, last_tick=self.last_tick_at)
+                        tick=self.tick_count, last_tick=self.last_tick_at,
+                        train_mode=self.train_mode)
             return snap
         try:
             S, eq = self.S, self._equity()
@@ -405,7 +505,7 @@ class Engine:
             vol_ratio = {s: round(r, 3) for s, r in S["vol_ratio"].items() if s in syms}
             lt = S["last_train"]
             next_train = None
-            if self.cfg.learning_enabled and lt:
+            if self.cfg.learning_enabled and lt and self.train_mode == "scheduled":
                 next_train = lt + self.cfg.retrain_interval_hours * 3600
             snap = {"mode": self.cfg.mode, "running": self.running, "busy": False,
                     "equity": round(eq, 4), "cash": round(S["cash"], 4), "peak": round(S["peak"], 4),
@@ -416,7 +516,12 @@ class Engine:
                     "tick": self.tick_count, "last_tick": self.last_tick_at,
                     "poll_seconds": self.cfg.poll_seconds, "training": dict(self.train_state),
                     "learning_enabled": self.cfg.learning_enabled,
-                    "retrain_interval_hours": self.cfg.retrain_interval_hours}
+                    "retrain_interval_hours": self.cfg.retrain_interval_hours,
+                    "train_mode": self.train_mode, "trainings": int(S.get("trainings", 0)),
+                    "bars_since_train": int(S.get("bars_since_train", 0)),
+                    "train_min_new_bars": self.cfg.train_min_new_bars,
+                    "train_cooldown_seconds": self.cfg.train_cooldown_seconds,
+                    "last_busy_at": self.last_busy_at}
             self._snap_cache = snap
             return snap
         finally:

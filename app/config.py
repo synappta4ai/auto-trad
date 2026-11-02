@@ -9,6 +9,8 @@ def _load_dotenv():
 
     No sobreescribe variables ya definidas en el entorno (Docker manda).
     """
+    if os.getenv("AUTOTRADER_SKIP_DOTENV"):
+        return
     path = os.path.join(os.getcwd(), ".env")
     if not os.path.isfile(path):
         return
@@ -80,7 +82,6 @@ class Config:
         self.api_token = _s("API_TOKEN", "")
         self.api_bind = _s("API_BIND", "127.0.0.1")
         self.api_port = _i("API_PORT", 8080)
-        self.ui = _s("UI", "web").lower()          # web | desktop
         self.auto_start = _b("AUTO_START", True)   # arranca el motor al iniciar el proceso
         self.retrain_on_start = _b("RETRAIN_ON_START", True)  # walk-forward al pulsar Iniciar/arrancar
         self.data_source = _s("DATA_SOURCE", "synthetic").lower()  # synthetic | exchange
@@ -136,9 +137,20 @@ class Config:
         self.enter_on_start = _b("ENTER_ON_START", False)
         self.min_notional = _f("MIN_NOTIONAL", 10)
         self.kill_switch_close_positions = _b("KILL_SWITCH_CLOSE_POSITIONS", True)
+        # --- Protección en vivo y vigilancia ---
+        self.native_stops = _b("NATIVE_STOPS", True)          # stop en el exchange, no solo en el proceso
+        self.reconcile_on_start = _b("RECONCILE_ON_START", True)
+        self.client_id_prefix = _s("CLIENT_ID_PREFIX", "at")
+        self.watchdog_enabled = _b("WATCHDOG_ENABLED", True)
+        self.watchdog_interval_seconds = _f("WATCHDOG_INTERVAL_SECONDS", 30)
+        self.watchdog_stall_seconds = _f("WATCHDOG_STALL_SECONDS", 600)
+        self.watchdog_flatten = _b("WATCHDOG_FLATTEN", False)   # false = solo avisa
         # --- Aprendizaje (walk-forward + champion/challenger) ---
         self.learning_enabled = _b("LEARNING_ENABLED", True)
         self.retrain_interval_hours = _f("RETRAIN_INTERVAL_HOURS", 168)
+        self.train_mode = _s("TRAIN_MODE", "scheduled").lower()   # scheduled | continuous
+        self.train_cooldown_seconds = _f("TRAIN_COOLDOWN_SECONDS", 300)
+        self.train_min_new_bars = _i("TRAIN_MIN_NEW_BARS", 1)
         self.train_window_bars = _i("TRAIN_WINDOW_BARS", 1500)
         self.test_window_bars = _i("TEST_WINDOW_BARS", 300)
         self.wf_folds = _i("WF_FOLDS", 3)
@@ -149,6 +161,14 @@ class Config:
         self.promote_margin_pct = _f("PROMOTE_MARGIN_PCT", 10)
         self.demote_on_fail = _b("DEMOTE_ON_FAIL", True)
         self.max_candidates = _i("MAX_CANDIDATES", 400)
+        # núcleos para repartir los candidatos del walk-forward (0 = automático, 1 = serie)
+        self.parallel_workers = _i("PARALLEL_WORKERS", 0)
+        # combinaciones mínimas por fold en la ventana de entrenamiento
+        self.min_train_trades = _i("MIN_TRAIN_TRADES", 5)
+        # separación entre train y test para evitar etiquetas solapadas (0 = ML_HORIZON)
+        self.embargo_bars = _i("EMBARGO_BARS", 0)
+        # exige además superar a comprar y mantener el activo
+        self.require_beat_benchmark = _b("REQUIRE_BEAT_BENCHMARK", False)
         # --- Autoajuste: deriva y riesgo ---
         self.retrain_on_drift = _b("RETRAIN_ON_DRIFT", True)
         self.drift_vol_ratio = _f("DRIFT_VOL_RATIO", 2.0)
@@ -179,12 +199,26 @@ class Config:
     def bpy(self):
         return self.bars_per_year if self.bars_per_year > 0 else 365 * 24 * 3600 / self.tf_seconds
 
+    @property
+    def embargo(self):
+        """Velas de separación entre la ventana de train y la de test."""
+        return self.embargo_bars if self.embargo_bars > 0 else int(self.ml_horizon)
+
     def validate(self):
         e = []
         if self.mode not in ("paper", "live"):
             e.append("MODE debe ser paper o live")
         if self.data_source not in ("synthetic", "exchange"):
             e.append("DATA_SOURCE debe ser synthetic o exchange")
+        if self.train_mode not in ("scheduled", "continuous"):
+            e.append("TRAIN_MODE debe ser scheduled o continuous")
+        if self.train_cooldown_seconds < 0:
+            e.append("TRAIN_COOLDOWN_SECONDS debe ser >= 0")
+        if self.train_min_new_bars < 0:
+            e.append("TRAIN_MIN_NEW_BARS debe ser >= 0")
+        if self.train_mode == "continuous" and self.train_cooldown_seconds < 60:
+            e.append("TRAIN_MODE=continuous exige TRAIN_COOLDOWN_SECONDS >= 60 "
+                     "(con menos, reentrena en cada ciclo y se come la CPU)")
         if not self.symbols:
             e.append("SYMBOLS vacío")
         if len({s.split("/")[-1] for s in self.symbols}) > 1:
@@ -193,6 +227,22 @@ class Config:
         bad = [s for s in self.strategies if s not in known]
         if bad or not self.strategies:
             e.append(f"STRATEGIES inválido {bad}; disponibles: {sorted(known)}")
+        if self.min_train_trades < 1:
+            e.append("MIN_TRAIN_TRADES debe ser >= 1")
+        if self.parallel_workers < 0:
+            e.append("PARALLEL_WORKERS debe ser >= 0 (0 = automático, 1 = en serie)")
+        if self.embargo_bars < 0:
+            e.append("EMBARGO_BARS debe ser >= 0")
+        if not self.client_id_prefix or len(self.client_id_prefix) > 8:
+            e.append("CLIENT_ID_PREFIX debe tener 1-8 caracteres")
+        elif not all(c.isalnum() or c in "-_." for c in self.client_id_prefix):
+            e.append("CLIENT_ID_PREFIX solo admite letras, números, '-', '_' y '.'")
+        if self.watchdog_interval_seconds <= 0:
+            e.append("WATCHDOG_INTERVAL_SECONDS debe ser > 0")
+        if self.watchdog_stall_seconds <= self.poll_seconds:
+            e.append("WATCHDOG_STALL_SECONDS debe ser mayor que POLL_SECONDS")
+        if self.train_window_bars - self.embargo < 100:
+            e.append("TRAIN_WINDOW_BARS - EMBARGO_BARS debe ser >= 100")
         need = self.train_window_bars + self.wf_folds * self.test_window_bars + 200
         if self.learning_enabled and self.history_bars < need:
             e.append(f"HISTORY_BARS ({self.history_bars}) debe ser >= TRAIN_WINDOW_BARS + WF_FOLDS*TEST_WINDOW_BARS + 200 = {need}")

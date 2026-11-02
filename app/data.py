@@ -7,10 +7,24 @@ import pandas as pd
 
 log = logging.getLogger("data")
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+_EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
 
 
 def tf_seconds(tf):
     return int(tf[:-1]) * _UNITS[tf[-1]]
+
+
+def index_ms(idx):
+    """Índice temporal -> epoch en milisegundos.
+
+    pandas guarda los índices con la resolución con la que se crearon (ms, us o
+    ns), así que `astype("int64")` no siempre son nanosegundos: se calcula por
+    diferencia contra la epoch y no hay sorpresas al guardar la caché.
+    """
+    idx = pd.DatetimeIndex(idx)
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    return ((idx - _EPOCH) // pd.Timedelta(milliseconds=1)).to_numpy(dtype="int64")
 
 
 def _frame(ts_ms, o, h, l, c, v):
@@ -27,11 +41,18 @@ class SyntheticFeed:
         self.tf_ms = tf_seconds(cfg.timeframe) * 1000
         self.cursor = cfg.history_bars + 50
         self.full = {}
-        total = self.cursor + 30000
+        self.total = self.cursor + 30000
         end = (int(time.time() * 1000) // self.tf_ms) * self.tf_ms
-        start = end - self.cursor * self.tf_ms
+        self.start = end - self.cursor * self.tf_ms
         for k, s in enumerate(cfg.symbols):
-            self.full[s] = self._gen(total, start, cfg.synthetic_seed + 101 * k, 100.0 * (k + 1))
+            self.full[s] = self._gen(self.total, self.start, cfg.synthetic_seed + 101 * k, 100.0 * (k + 1))
+
+    def add_symbol(self, symbol):
+        """Añade un símbolo en caliente (el motor recorre cfg.symbols en cada ciclo)."""
+        if symbol in self.full:
+            return
+        k = len(self.full)
+        self.full[symbol] = self._gen(self.total, self.start, self.cfg.synthetic_seed + 101 * k, 100.0 * (k + 1))
 
     def _gen(self, n, start_ms, seed, p0):
         rng = np.random.default_rng(seed)
@@ -68,9 +89,11 @@ class SyntheticFeed:
 
 
 class ExchangeFeed:
-    def __init__(self, cfg):
+    def __init__(self, cfg, store=None):
         import ccxt
         self.cfg = cfg
+        self.store = store        # caché local de velas (opcional)
+        self._saved = {}          # última vela guardada por símbolo (ms)
         self.tf_ms = tf_seconds(cfg.timeframe) * 1000
         params = {"enableRateLimit": True}
         if cfg.api_key:
@@ -82,6 +105,13 @@ class ExchangeFeed:
             self.ex.set_sandbox_mode(True)
         self.ex.load_markets()
         self.data = {}
+
+    def add_symbol(self, symbol):
+        """Verifica que el mercado exista; las velas se piden de forma perezosa."""
+        if symbol in self.data or not self.ex.markets:
+            return
+        if symbol not in self.ex.markets:
+            raise ValueError(f"{symbol} no existe en {self.cfg.exchange}")
 
     def advance(self):
         pass
@@ -112,11 +142,33 @@ class ExchangeFeed:
                 cur = new if cur is None else pd.concat([cur, new])
                 cur = cur[~cur.index.duplicated(keep="last")].sort_index().iloc[-(self.cfg.history_bars + 500):]
                 self.data[symbol] = cur
+                self._save(symbol, cur)
         return self.data[symbol]
+
+    def _save(self, symbol, df):
+        """Guarda en SQLite lo que aún no estaba. Así el laboratorio puede
+        entrenar con estas velas sin volver a pedirlas (y sin esperar al mercado)."""
+        if self.store is None or df is None or not len(df):
+            return
+        try:
+            ts_ms = index_ms(df.index)
+            keep = ts_ms > self._saved.get(symbol, 0)
+            if not keep.any():
+                return
+            pms = ts_ms[keep]
+            part = df[keep]
+            self.store.save_candles(symbol, self.cfg.timeframe,
+                                    [(int(t), float(r.open), float(r.high), float(r.low),
+                                      float(r.close), float(r.volume))
+                                     for t, r in zip(pms, part.itertuples())])
+            self._saved[symbol] = int(pms.max())
+        except Exception:
+            log.exception("no se pudo guardar el histórico de %s", symbol)
 
     def last_price(self, symbol):
         return float(self.ex.fetch_ticker(symbol)["last"])
 
 
-def make_feed(cfg):
-    return SyntheticFeed(cfg) if cfg.data_source == "synthetic" else ExchangeFeed(cfg)
+def make_feed(cfg, store=None):
+    """Sintética para probar sin red; exchange con caché en disco si se pasa `store`."""
+    return SyntheticFeed(cfg) if cfg.data_source == "synthetic" else ExchangeFeed(cfg, store)
