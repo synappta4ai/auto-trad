@@ -1,0 +1,2 @@
+[console_scripts]
+autotrader = app.main:main

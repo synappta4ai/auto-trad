@@ -1,0 +1,35 @@
+# Todo se parametriza desde .env  (copia .env.example -> .env)
+services:
+  autotrader:
+    build: .
+    image: ${IMAGE_NAME:-autotrader:latest}
+    container_name: ${CONTAINER_NAME:-autotrader}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    env_file: .env                      # TODAS las variables del .env llegan al contenedor
+    environment:
+      TZ: ${TZ:-UTC}
+      DATA_DIR: /data
+    ports:
+      # por defecto solo accesible desde el propio servidor (127.0.0.1). Para exponerlo: API_BIND=0.0.0.0
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8080}:8000"
+    volumes:
+      - ${VOLUME_NAME:-autotrader_data}:/data
+    cpus: ${CPU_LIMIT:-1.0}
+    mem_limit: ${MEM_LIMIT:-1g}
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  autotrader_data:
+    name: ${VOLUME_NAME:-autotrader_data}

@@ -1,0 +1,6 @@
+numpy>=1.26
+pandas>=2.1
+ccxt>=4.3
+fastapi>=0.110
+uvicorn>=0.29
+PyQt6>=6.6.0

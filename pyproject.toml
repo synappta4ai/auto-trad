@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app"]
+
+[project]
+name = "autotrader"
+version = "1.0.0"
+description = "AutoTrader - sistema de trading automático con auto-ajuste"
+requires-python = ">=3.9,<3.13"
+dependencies = [
+    "numpy>=1.26,<2",
+    "pandas>=2.1",
+    "ccxt>=4.3",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.scripts]
+autotrader = "app.main:main"
+
+[tool.uv]
+# Extra speed optimizations for uv
+install-dir = ".venv"
+generate-lockfile = true
