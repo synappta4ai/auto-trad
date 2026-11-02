@@ -1,137 +1,73 @@
-# AutoTrader with uv
+# AutoTrader con uv
 
-## What is uv?
+[uv](https://astral.sh/uv) es el gestor de paquetes/entornos usado en este
+proyecto. Resuelve e instala mucho más rápido que pip y mantiene un lockfile
+reproducible.
 
-[uv](https://astral.sh/uv) is a fast Python package installer and resolver written in Rust, by the creators of [Poetry](https://python-poetry.org/) and [Ruff](https://beta.ruff.lol/). It's designed to replace `pip` and `pip-tools` for faster, more reliable installs.
+## Requisitos
 
-**Key benefits for this project:**
-- 10-100x faster than pip
-- deterministic installs with lockfile
-- zero-step setup (no `requirements.txt` maintenance hassle)
-- compatible with existing `requirements.txt`
+- [uv](https://astral.sh/uv) instalado.
+- Python 3.9–3.12 (uv lo descarga solo si no lo tienes; el proyecto fija
+  `requires-python = ">=3.9,<3.13"`).
 
-## Installation with uv
+## Instalación
 
-### Option 1: Using the existing `requirements.txt` (recommended for compatibility)
-
-```bash
-# Create virtual environment with uv
-uv venv              # creates .venv/ with Python 3.7+ (default)
-uv sync              # installs from requirements.txt + pyproject.toml
-
-# Or manually:
-uv pip install -r requirements.txt
-```
-
-### Option 2: Full uv workflow
-
-```bash
-# 1. Create venv
-uv venv
-
-# 2. Install dependencies (uv will also read requirements.txt)
-uv pip install -r requirements.txt
-
-# 3. Or install directly from pyproject.toml
-uv pip install .
-
-# 4. Run the app
-uv run python -m app.main
-```
-
-## Development Workflow
-
-### Adding a new dependency
-
-```bash
-# Using uv (updates both requirements.txt and uv.lock)
-uv add new-package
-
-# Or manually edit pyproject.toml + uv sync
-uv sync
-```
-
-### Running scripts
-
-```bash
-uv run python -m app.main
-uv run python -c "from app.config import Config; c = Config(); print(c.public())"
-uv run pytest  # if you add tests
-```
-
-## Comparison: uv vs pip
-
-| Feature | uv | pip |
-|---------|-----|-----|
-| Speed | ✅ Very fast (Rust-based) | ✗ Slower |
-| Lockfile | ✅ `uv.lock` generated | ✗ Manual |
-| Python reqs | ✅ `requires-python` in pyproject.toml | ✗ Manual |
-| Cross-platform | ✅ Windows, macOS, Linux | ✅ All |
-| Drop-in replacement | ✅ `uv pip install` | ✅ `pip install` |
-
-## Docker with uv
-
-The Dockerfile can be optimized to use uv for faster builds:
-
-```dockerfile
-# Before: RUN pip install -r requirements.txt
-# After: Use uv in a temp container
-
-FROM python:3.12-slim AS builder
-
-# Install uv
-COPY . /tmp/src
-RUN pip install uv  # or use official uv image
-
-# Copy only what's needed
-WORKDIR /srv
-COPY requirements.txt .
-RUN uv pip install --system -r requirements.txt
-
-COPY app ./app
-```
-
-For this project, the existing Dockerfile works fine with `pip`. uv is mainly for local development.
-
-## Updating Dependencies
-
-```bash
-# Update to latest compatible versions
-uv pip sync
-
-# Or force upgrade
-uv pip install --upgrade -r requirements.txt
-```
-
-## Troubleshooting
-
-### "Python 3.7+ required"
-This project requires Python 3.7+. uv will use the system Python. Ensure:
-```bash
-python3 --version  # Should be 3.7+
-# or
-uv python pin 3.12  # Set a specific Python version
-```
-
-### Version conflicts
-uv's resolver is stricter than pip's. If you encounter conflicts:
-```bash
-# Allow newer versions
-uv pip install "package>=version"
-
-# Or ignore specific constraints
-uv pip install --extra --no-deps package
-```
-
-### Windows-specific
-On Windows, ensure you're using PowerShell or cmd with proper activation:
 ```powershell
-# Create venv
-uv venv
-
-# Activate
-.venv\Scripts\Activate.ps1
-
-# Install
-uv pip install -r requirements.txt
+.\install-with-uv.ps1      # crea .venv, instala deps y verifica
+# o manualmente:
+uv sync                    # lee pyproject.toml + uv.lock y crea/actualiza .venv
 ```
+
+No hace falta activar el entorno: `uv run` lo usa automáticamente.
+
+## Ejecutar
+
+```bash
+uv run python -m app.main
+# panel web: http://127.0.0.1:8080/ui
+```
+
+En Windows el `python` del sistema puede ser 2.7; por eso todos los comandos
+del proyecto usan `uv run python ...`.
+
+## Dependencias
+
+```bash
+uv add <paquete>           # añade a pyproject.toml, actualiza uv.lock e instala
+uv remove <paquete>
+uv sync                    # aplica lo que haya en pyproject.toml/uv.lock
+uv lock --upgrade          # actualiza versiones dentro de los rangos permitidos
+```
+
+- `requirements.txt` se mantiene por compatibilidad con `pip`/Docker.
+- `requirements-gui.txt` es opcional: solo PyQt6 para `UI=desktop`.
+
+## GUI de escritorio (opcional)
+
+```bash
+uv pip install -r requirements-gui.txt
+# en .env:  UI=desktop
+```
+
+El panel web no necesita PyQt6.
+
+## Docker
+
+La imagen usa `pip` a propósito (build simple y reproducible con
+`requirements.txt`). uv es la vía recomendada para desarrollo local.
+
+## Problemas típicos
+
+| Síntoma | Solución |
+| --- | --- |
+| `uv: command not found` | instala uv y abre una consola nueva: `irm https://astral.sh/uv/install.ps1 \| iex` |
+| Resolución falla por versión de Python | `uv python install 3.11` y `uv python pin 3.11` |
+| Quieres reinstalar limpio | borra `.venv` y ejecuta `uv sync` |
+| `TOML parse error` en `pyproject.toml` | revisa que no queden claves ajenas a `[tool.uv]` (p. ej. `install-dir`) |
+
+## Referencias
+
+- `pyproject.toml` — metadatos, dependencias y entrypoint `autotrader`.
+- `uv.lock` — versiones exactas resueltas (se commitea).
+- `install-with-uv.ps1` — instalación/verificación en Windows.
+- `README.md` — uso general, panel web y operación.

@@ -1,53 +1,118 @@
-# AutoTrader — sistema de trading automático con auto-ajuste (Docker)
+# AutoTrader — sistema de trading automático con auto-ajuste
 
-Bot de trading para correr 24/7 en tu propio servidor. Todo es configurable desde `.env`: puerto, nombre del contenedor, topes de riesgo, estrategias, frecuencia de reentrenamiento y reglas de auto-ajuste.
+Bot de trading para correr 24/7, en local o en Docker. Todo se configura desde
+`.env`: puerto, topes de riesgo, estrategias, frecuencia de reentrenamiento y
+reglas de auto-ajuste. Incluye un **panel web** (`/ui`) para iniciar, detener y
+pausar el motor sin tocar la consola.
 
 > **Lee esto primero.** Ningún software garantiza ganancias, y la mayoría de los sistemas automáticos retail pierden dinero tras costos. Este proyecto está diseñado para **no operar cuando no encuentra una ventaja demostrable fuera de muestra** (queda en liquidez) y para limitar pérdidas con topes duros. Eso reduce el riesgo, no lo elimina. Empieza siempre en `MODE=paper`, luego testnet del exchange y solo después, con capital que puedas perder, `live`. No es asesoría financiera.
 
 ---
 
-## 📦 Instalación Rápida
+## 📦 Instalación rápida
 
-### Opción 1: Con uv (recomendado — instalación 10-100x más rápida)
+Requisito: [uv](https://astral.sh/uv) (recomendado) o Python 3.9–3.12.
 
-```bash
-# Windows PowerShell
-.\install-with-uv.ps1
+### Opción 1: uv (recomendado)
 
-# O manualmente:
-uv venv                      # crea .venv con Python 3.7+
-. .venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
+```powershell
+.\install-with-uv.ps1          # crea .venv, instala dependencias y verifica la config
+# o manualmente:
+uv sync
 uv run python -m app.main
 ```
 
-### Opción 2: Con pip tradicional
+### Opción 2: pip tradicional
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate     # Windows: .venv\Scripts\Activate.ps1
+python -m venv .venv
+. .venv\Scripts\Activate.ps1   # Windows
+source .venv/bin/activate      # Linux/macOS
 pip install -r requirements.txt
 python -m app.main
 ```
+
+La GUI de escritorio es opcional y **no** hace falta para el panel web:
+`uv pip install -r requirements-gui.txt` (o `pip install -r requirements-gui.txt`).
 
 ---
 
 ## 1. Inicio rápido
 
+### Local (recomendado)
+
+Windows, un clic: doble clic en **`start-autotrader.bat`** (o
+`.\start-autotrader.ps1`). El script instala dependencias si faltan, arranca el
+motor y abre el navegador en el panel.
+
+Manual:
+
 ```bash
-cp .env.example .env          # edita API_TOKEN, CONTAINER_NAME, API_PORT, etc.
-# Si usas uv: .\install-with-uv.ps1  (o pasos manuales arriba)
-docker compose up -d --build
-docker compose logs -f        # ver qué hace
-curl http://127.0.0.1:8080/health
-curl -H "X-API-Token: TU_TOKEN" http://127.0.0.1:8080/status
+copy .env.example .env        # Linux/macOS: cp .env.example .env
+uv run python -m app.main
 ```
 
-Por defecto arranca en **`MODE=paper` + `DATA_SOURCE=synthetic`**: precios simulados con regímenes cambiantes, sin red ni dinero. Sirve para ver el ciclo completo (entrenar → promover → operar → reentrenar). Para ver el reentrenamiento en la demo pon `RETRAIN_INTERVAL_HOURS=0.05` y `POLL_SECONDS=5`.
+- Panel de control: **http://127.0.0.1:8080/ui**
+- Salud (sin token): `http://127.0.0.1:8080/health`
+- Swagger: `http://127.0.0.1:8080/docs`
 
-Para datos reales sin arriesgar nada: `DATA_SOURCE=exchange`, `MODE=paper` (usa velas reales y opera en simulado).
+### Docker
 
-Cambiar cualquier valor: edita `.env` y ejecuta `docker compose up -d` (se recrea el contenedor; el estado persiste en el volumen).
+```bash
+copy .env.example .env        # edita al menos API_TOKEN
+docker compose up -d --build
+docker compose logs -f
+```
+
+El panel queda en `http://127.0.0.1:8080/ui`. El contenedor escucha en
+`0.0.0.0:8080`; lo que se publica al host lo controla `API_HOST_BIND`
+(por defecto `127.0.0.1`). Para exponerlo en red: `API_HOST_BIND=0.0.0.0`.
+
+Por defecto arranca en **`MODE=paper` + `DATA_SOURCE=synthetic`**: precios
+simulados con regímenes cambiantes, sin red ni dinero. Sirve para ver el ciclo
+completo (entrenar → promover → operar → reentrenar). Para acelerar el
+reentrenamiento en la demo: `RETRAIN_INTERVAL_HOURS=0.05` y `POLL_SECONDS=5`.
+
+Para datos reales sin arriesgar nada: `DATA_SOURCE=exchange`, `MODE=paper`
+(usa velas reales y opera en simulado).
+
+Cambiar cualquier valor: edita `.env` y reinicia (`docker compose up -d` en
+Docker, Ctrl+C y `uv run ...` en local). El estado persiste en SQLite.
+
+### Panel web
+
+- **Iniciar / Detener / Pausar**: controlan el bucle continuo del motor.
+  *Iniciar* funciona siempre: limpia el kill switch y arranca, sin depender de
+  la configuración previa.
+- **Reentrenar**: lanza un walk-forward de inmediato (no espera al siguiente
+  ciclo) y el panel sigue el progreso en vivo.
+- **Cerrar posiciones**: cierra todo a mercado.
+- Muestra equity, caja, drawdown, posiciones abiertas, campeón por símbolo,
+  multiplicador de riesgo y los últimos eventos.
+- **Entrenamiento (walk-forward)**: barra de progreso, etapa (`backtest`,
+  `fold`, `decision`), folds con su estrategia y Sharpe train/test, OOS agregado
+  con los motivos de rechazo y cuenta atrás del próximo reentrenamiento.
+- **Actividad del motor**: número de ciclo, antigüedad del último tick,
+  intervalo y precio actual — sirve para distinguir "no hay señal" de "está
+  parado".
+
+`.env` se carga automáticamente al ejecutar desde la raíz del proyecto. Las
+variables ya definidas en el entorno tienen prioridad (así manda Docker).
+
+| Variable | Default | Qué hace |
+| --- | --- | --- |
+| `UI` | `web` | `web` = panel en el navegador · `desktop` = ventana PyQt6 |
+| `AUTO_START` | `true` | arranca el motor al iniciar el proceso |
+| `RETRAIN_ON_START` | `true` | entrena al arrancar (o al pulsar *Iniciar*) |
+| `API_BIND` / `API_PORT` | `127.0.0.1` / `8080` | dónde escucha la API y el panel |
+| `DATA_DIR` | `./data` (`/data` en Docker) | carpeta de la base SQLite |
+
+Para ver actividad constante en la demo: `POLL_SECONDS=5` y
+`RETRAIN_INTERVAL_HOURS=0.25` (entrena cada 15 min).
+
+> **¿No abre operaciones?** Es lo esperado: el walk-forward rechaza campeones
+> sin ventaja en OOS (evento `sin_ventaja`). Para ver la demo operando ya mismo:
+> `LEARNING_ENABLED=false`, `FIXED_STRATEGY=ema_cross`, `ENTER_ON_START=true`.
 
 ---
 
@@ -71,7 +136,13 @@ Cambiar cualquier valor: edita `.env` y ejecuta `docker compose up -d` (se recre
                                                    API FastAPI (puerto API_PORT)
 ```
 
-Un solo contenedor: un hilo con el motor y un servidor HTTP para monitoreo/control. Estado persistente en SQLite dentro del volumen `/data`, por lo que un reinicio retoma posiciones, campeones y contadores.
+Un solo proceso: un hilo con el motor y un servidor HTTP (FastAPI) que sirve la
+API y el panel web. Estado persistente en SQLite (`DATA_DIR`, `/data` en
+Docker), por lo que un reinicio retoma posiciones, campeones y contadores.
+
+**Interfaz:** panel web `/ui` (HTML + JS, sin build ni dependencias de front) y,
+opcionalmente, GUI de escritorio PyQt6 con `UI=desktop`
+(`requirements-gui.txt`). Ambas usan los mismos endpoints.
 
 **Lenguaje:** Python (numpy/pandas vectorizados). El cuello de botella real en velas de 5m o más es la red del exchange, no el cálculo; un entrenamiento completo de ~20 combinaciones por símbolo tarda del orden de décimas de segundo. Si necesitaras latencia de milisegundos (HFT) este diseño no es el adecuado.
 
@@ -137,8 +208,8 @@ Cuando cambia el campeón, el bot espera la siguiente señal nueva antes de abri
 | Deriva de volatilidad (corta/larga ≥ `DRIFT_VOL_RATIO` o ≤ 1/ratio) | `RETRAIN_ON_DRIFT`, `DRIFT_SHORT_BARS`, `DRIFT_LONG_BARS` |
 | Racha de pérdidas                                                   | `DRIFT_LOSS_STREAK`                                       |
 | Mínimo entre reentrenos por deriva                                  | `DRIFT_MIN_HOURS`                                         |
-| Manual                                                              | `POST /retrain`                                           |
-| Arranque                                                            | siempre una vez                                           |
+| Manual                                                              | `POST /retrain` o botón *Reentrenar* del panel             |
+| Arranque                                                            | al iniciar el motor (`AUTO_START=true` o botón *Iniciar*)  |
 
 `LEARNING_ENABLED=false` desactiva todo esto y usa `FIXED_STRATEGY` con el primer valor de cada rejilla.
 
@@ -163,7 +234,7 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 | `STOP_ATR_MULT`, `ATR_PERIOD`, `TAKE_PROFIT_RR` | Stop dinámico por ATR; take profit opcional como múltiplo del riesgo                                                                                       |
 | `COOLDOWN_BARS`                                 | Espera tras una operación perdedora                                                                                                                        |
 | `MAX_DAILY_LOSS_PCT`, `MAX_WEEKLY_LOSS_PCT`     | Pausa **entradas** hasta el día/semana UTC siguiente (las posiciones siguen con su stop)                                                                   |
-| `MAX_DRAWDOWN_PCT`                              | **Kill switch**: bloquea entradas y (con `KILL_SWITCH_CLOSE_POSITIONS`) cierra todo. Se libera solo con `POST /resume` (reinicia el pico al equity actual) |
+| `MAX_DRAWDOWN_PCT`                              | **Kill switch**: bloquea entradas y (con `KILL_SWITCH_CLOSE_POSITIONS`) cierra todo. Se libera con `POST /resume` o el botón *Iniciar* (reinicia el pico al equity actual) |
 | `MIN_NOTIONAL`                                  | Evita órdenes diminutas                                                                                                                                    |
 
 ---
@@ -173,10 +244,12 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 | Endpoint                                             | Función                                                                                    |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `GET /health`                                        | Estado básico (sin token; lo usa el healthcheck de Docker)                                 |
+| `GET /ui`                                            | Panel web de control (sin token: el token va embebido en la página)                        |
 | `GET /status`                                        | Equity, caja, drawdown, posiciones, campeones, multiplicadores de riesgo                   |
 | `GET /learning`                                      | Último reporte walk-forward por símbolo: folds, métricas OOS, decisión, motivos de rechazo |
 | `GET /trades?limit=` · `GET /equity` · `GET /events` | Historial                                                                                  |
 | `GET /config`                                        | Configuración efectiva (secretos ocultos)                                                  |
+| `POST /start` · `/stop`                              | Arranca / detiene el bucle continuo del motor                                              |
 | `POST /retrain` · `/halt` · `/resume` · `/close_all` | Control manual                                                                             |
 
 Documentación interactiva en `/docs` (Swagger). Por defecto el puerto solo escucha en `127.0.0.1`; para acceder remotamente usa un túnel SSH (`ssh -L 8080:127.0.0.1:8080 servidor`) o un reverse proxy con TLS. Si pones `API_BIND=0.0.0.0` sin proteger el puerto, cualquiera con tu token podría operar el bot.
@@ -199,6 +272,23 @@ En live, `INITIAL_CAPITAL` es el capital asignado al bot: el motor nunca usa má
 
 ## 9. Operación
 
+### Local
+
+```powershell
+uv run python -m app.main              # motor + API + panel (Ctrl+C para parar)
+.\start-autotrader.ps1                 # lo mismo, en otra ventana y abre el navegador
+curl.exe http://127.0.0.1:8080/health
+curl.exe -H "X-API-Token: TU_TOKEN" http://127.0.0.1:8080/status
+```
+
+En PowerShell `curl` es un alias de `Invoke-WebRequest`; usá `curl.exe` (o
+`Invoke-RestMethod`). El motor corre en bucle hasta que pulses **Detener** o
+`POST /stop`; el panel refresca estado cada 1,5 s, eventos cada 2 s y el
+reporte de entrenamiento cada 3 s (durante un reentrenamiento manual, cada
+150 ms hasta que termina).
+
+### Docker
+
 ```bash
 docker compose logs -f --tail 200            # logs
 docker compose up -d --build                 # aplicar cambios de .env o de código
@@ -208,7 +298,9 @@ docker compose down -v                       # parar y BORRAR estado/historial
 docker run --rm -v ${VOLUME_NAME:-autotrader_data}:/data -v "$PWD":/backup alpine tar czf /backup/autotrader-data.tgz -C /data .
 ```
 
-Para reiniciar desde cero el capital simulado: `docker compose down -v` y levantar de nuevo.
+Para reiniciar desde cero el capital simulado: `docker compose down -v` y
+levantar de nuevo (en local basta con borrar `data/autotrader.db` con el motor
+detenido).
 
 ---
 
@@ -221,7 +313,8 @@ Para reiniciar desde cero el capital simulado: `docker compose down -v` y levant
 - **Live es spot, long-only, órdenes de mercado, un solo exchange y una sola moneda cotizada.** La conciliación con el exchange es mínima: se limita la venta al saldo disponible y se registran eventos `partial_close` o `reconcile_needed` si algo no cuadra. Revisa `/events`.
 - El entrenamiento corre en el mismo hilo del motor; con rejillas muy grandes pausa el ciclo unos segundos (`MAX_CANDIDATES` lo acota).
 - Los datos `synthetic` son un generador de prueba, **no** son mercado real; sirven para validar el mecanismo, no la rentabilidad.
-- Qué se probó y qué no: el motor, las estrategias, el optimizador, el kill switch, la contabilidad y la ruta live (con un exchange _simulado_) se probaron con datos sintéticos. **No** se construyó la imagen Docker, **no** se ejecutó la API FastAPI (solo se verificó que compila) y **no** se probó contra un exchange real. Espera encontrar pequeños ajustes en el primer `docker compose up --build`; revisa `docker compose logs`.
+- Qué se probó y qué no: motor y bucle continuo, `start/stop/pause` por API y panel, walk-forward, stops, contabilidad y el panel web renderizado en navegador, además de `docker compose config`. Se verificó el ciclo completo de trading en paper sintético (apertura → cierre por stop → actualización de cash/equity y trade en SQLite). **No** se construyó la imagen Docker en esta máquina ni se probó contra un exchange real.
+- El panel web embebe el `API_TOKEN` en el HTML (por eso `/ui` no pide cabecera). No lo publiques sin TLS ni autenticación delante: usa túnel SSH o un reverse proxy. Si el token no te sirve para eso, define uno propio y no expongas el puerto.
 
 ---
 
@@ -230,107 +323,71 @@ Para reiniciar desde cero el capital simulado: `docker compose down -v` y levant
 ```
 .env.example          todos los parámetros documentados
 pyproject.toml        configuración uv (metadatos, dependencias, scripts)
+uv.lock               lockfile reproducible de uv
 docker-compose.yml    contenedor, puerto, volumen, límites (todo desde .env)
 Dockerfile
-CONFIGURATION_STATUS.md   resumen de configuración actual
-CONTEXT_UV.md           contexto de integración uv
-README_UV.md            documentación completa de uv
-install-with-uv.ps1     script PowerShell para instalar con uv
-.env                    configuración activa (copia de .env.example)
-requirements.txt        dependencias pip (compatibilidad tradicional)
+start-autotrader.bat      arranque en un clic (Windows) + abre el panel
+start-autotrader.ps1      ídem en PowerShell
+install-with-uv.ps1       instalación/verificación con uv
+requirements.txt          dependencias base (pip)
+requirements-gui.txt      PyQt6 opcional para UI=desktop
+.env                      configuración activa (copia de .env.example)
+CONFIGURATION_STATUS.md   estado actual de la configuración
+README_UV.md              documentación de uv
+CONTEXT_UV.md             contexto de la integración uv
 app/
-  config.py           lectura y validación de variables de entorno
+  config.py           carga de .env, valores y validación
   data.py             feed sintético y feed ccxt
   strategies.py       indicadores y las 4 estrategias
   optimizer.py        backtest vectorizado + walk-forward + champion/challenger
   regime.py           deriva y multiplicador de riesgo
-  engine.py           ciclo, entradas/salidas, topes, kill switch, programador
+  engine.py           ciclo, entradas/salidas, topes, kill switch, start/stop
   broker.py           paper y ccxt
-  api.py / main.py    API FastAPI y arranque
+  api.py              API FastAPI + panel web en /ui
+  gui.py              dashboard PyQt6 opcional (UI=desktop)
+  main.py             arranque: motor + uvicorn (+ GUI opcional)
 ```
 
 ---
 
-## 🔧 Nuevas adiciones
+## 12. Flujos de trabajo comunes
 
-### Integración uv
-
-Se ha añadido soporte moderno de paquetes con [uv](https://astral.sh/uv), un instalador de Python escrito en Rust que es 10-100x más rápido que pip.
-
-**Nuevos archivos:**
-- `pyproject.toml` - Metadatos del proyecto, dependencias y scripts uv
-- `README_UV.md` - Documentación completa de uv
-- `CONTEXT_UV.md` - Este contexto de integración
-- `install-with-uv.ps1` - Script PowerShell para instalación automática
-
-**Beneficios:**
-- Instalaciones 10-100x más rápidas
-- Lockfile automático (`uv.lock`) para instancias reproducibles
-- `uv sync` para instalar todas las dependencias con un comando
-- `uv add <paquete>` para añadir nuevas dependencias
-
-### Configuración .env
-
-El archivo `.env` ha sido configurado para modo **synthetic** (pruebas sin necesidad de exchange):
-- `MODE=paper` - trading simulado
-- `DATA_SOURCE=synthetic` - datos generados localmente
-- `API_TOKEN=autotrader-secret-token-2026` - token de autenticación API
-- Todos los parámetros de riesgo, estrategias y aprendizaje pre-configurados
-
-Ver `.env` y `.env.example` para detalles completos.
-
-### Documentación adicional
-
-- `CONFIGURATION_STATUS.md` - Resumen del estado actual de la configuración
-- `README_UV.md` - Documentación detallada sobre cómo usar uv con este proyecto
-
----
-
-## 📋 Flujos de trabajo comunes
-
-### Con uv (rápido y recomendado)
+### uv (recomendado)
 
 ```powershell
-# 1. Instalar
-.\install-with-uv.ps1
-
-# 2. Ejecutar
-uv run python -m app.main
-
-# 3. Probar API
-curl http://127.0.0.1:8080/health
-curl -H "X-API-Token: autotrader-secret-token-2026" http://127.0.0.1:8080/status
+uv sync                                  # instala/actualiza dependencias
+uv run python -m app.main                # motor + API + panel
+uv run python -c "from app.config import Config; print(Config().public())"
+uv add <paquete>                         # nueva dependencia (pyproject + uv.lock)
 ```
 
-### Con pip (tradicional)
+### pip
 
 ```bash
-python3 -m venv .venv
-. .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m app.main
 ```
 
-### Añadir una nueva dependencia
-
-```powershell
-# Con uv
-uv add nombre-del-paquete
-
-# Con pip
-pip install nombre-del-paquete
-# Luego actualiza requirements.txt si es necesario
-```
-
-### Con Docker
+### Docker
 
 ```bash
 docker compose up -d --build     # aplicar cambios de .env o código
-docker compose logs -f           # ver logs en tiempo real
-docker compose down              # parar (conserva volumen en /data)
+docker compose logs -f           # logs en tiempo real
+docker compose down              # parar (conserva el volumen)
 docker compose down -v           # parar y borrar estado/historial
 ```
 
+### Problemas típicos
+
+| Síntoma | Causa / solución |
+| --- | --- |
+| `[Errno 10048]` al arrancar | otro proceso ocupa el puerto: ciérralo o cambia `API_PORT` |
+| `401 X-API-Token inválido` | el header no coincide con `API_TOKEN` cargado desde `.env` |
+| El panel dice "sin conexión" | el servidor no está arriba o cambió `API_PORT`; revisa la consola |
+| No hay operaciones | el walk-forward no halló ventaja (`sin_ventaja`); ver nota de demo en la sección 1 |
+| `uv` no reconocido | instala uv y abre una consola nueva: `irm https://astral.sh/uv/install.ps1 \| iex` |
+
 ---
 
-> **Importante:** Este proyecto requiere **Python 3.7+**. El sistema actual tiene Python 2.7, por lo que necesitas Python 3.x para ejecutarlo. Consulta la sección "Python Version Required" en CONFIGURATION_STATUS.md para más detalles.
+> **Python:** el proyecto requiere 3.9–3.12. En Windows `python` puede apuntar a
+> 2.7; usá siempre `uv run python ...` para que corra con el intérprete del `.venv`.

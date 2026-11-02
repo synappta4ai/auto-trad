@@ -1,144 +1,43 @@
-# AutoTrader Project - uv Integration Complete
+# AutoTrader — integración con uv
 
-## ✅ What Was Implemented
+Resumen de cómo está montado uv en el proyecto y por qué.
 
-1. **`pyproject.toml`** - Modern Python project metadata
-   - Project name: `autotrader`
-   - Version: `1.0.0`
-   - Python requirement: `>=3.7`
-   - Dependencies from `requirements.txt`
-   - CLI script entry point: `autotrader = "app.main:main"`
-   - uv configuration for lockfile generation
+## Archivos
 
-2. **`README_UV.md`** - Comprehensive documentation
-   - Installation methods with uv
-   - Comparison: uv vs pip
-   - Development workflow
-   - Docker considerations
-   - Troubleshooting guide
+| Archivo | Rol |
+| --- | --- |
+| `pyproject.toml` | metadatos, dependencias, `requires-python = ">=3.9,<3.13"`, entrypoint `autotrader = "app.main:main"` |
+| `uv.lock` | versiones exactas resueltas (reproducibilidad) |
+| `.venv/` | entorno gestionado por uv (ignorado por git) |
+| `install-with-uv.ps1` | instalación y verificación en Windows |
+| `requirements.txt` | compatibilidad con pip y con la imagen Docker |
+| `requirements-gui.txt` | PyQt6 opcional para `UI=desktop` |
 
-3. **`install-with-uv.ps1`** - PowerShell installation script
-   - Auto-detects/installs uv if needed
-   - Creates venv with `uv venv`
-   - Installs dependencies with `uv pip install -r requirements.txt`
-   - Activates environment
-   - Verifies config loads correctly
-
-## 📦 Project Structure Now Includes
-
-```
-autotrader/
-├── .env                    # Configuration (created earlier)
-├── pyproject.toml          # NEW: uv project config
-├── requirements.txt        # Original pip requirements
-├── Dockerfile
-├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── api.py
-│   ├── optimizer.py
-│   ├── strategies.py
-│   ├── engine.py
-│   ├── data.py
-│   ├── broker.py
-│   └── store.py
-├── README_UV.md            # NEW: uv documentation
-├── CONFIGURATION_STATUS.md # NEW: config summary
-└── .venv/                  # Will be created by uv
-```
-
-## 🚀 How to Use uv with This Project
-
-### Quick Start (recommended)
+## Flujo
 
 ```powershell
-# Windows PowerShell
-.\install-with-uv.ps1
+uv sync                     # crea/actualiza .venv desde pyproject + uv.lock
+uv run python -m app.main   # ejecuta sin activar el entorno
+uv add <paquete>            # nueva dependencia (actualiza pyproject y uv.lock)
+```
 
-# Or manually:
-uv venv              # Create .venv
-. .venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
+`uv run` garantiza el intérprete del `.venv`; en esta máquina el `python` del
+sistema es 2.7 y no sirve para el proyecto.
+
+## Decisiones
+
+- **Un solo lockfile**: uv resuelve y fija versiones; no se usan constraints
+  manuales.
+- **Sin `[tool.uv] install-dir`**: provocaba un `TOML parse error` con la
+  versión actual de uv y no hacía falta (uv usa `.venv` por defecto).
+- **PyQt6 fuera de las dependencias base**: la GUI de escritorio es opcional y
+  el panel web (`/ui`) no la necesita.
+- **Docker con pip**: build más simple y sin depender de uv dentro de la imagen.
+
+## Verificación
+
+```powershell
+uv run python -c "from app.config import Config; print(Config().public())"
 uv run python -m app.main
-```
-
-### With Lockfile (deterministic installs)
-
-```bash
-uv sync              # Installs from requirements.txt + pyproject.toml
-# uv.lock is generated for reproducible installs
-```
-
-### Adding New Dependencies
-
-```bash
-uv add package-name   # Updates requirements.txt AND uv.lock
-uv sync               # Installs the new dependency
-```
-
-## 🔧 Benefits for This Project
-
-| Aspect | Before | After uv |
-|--------|--------|----------|
-| Install speed | ~10-30s | ~1-3s |
-| Dependency locking | Manual (`pip-tools`) | Automatic (`uv.lock`) |
-| Python version pinning | `.python-version` or env | `python = ">=3.7"` in pyproject.toml |
-| Reproducible installs | `requirements.txt` only | `requirements.txt` + `uv.lock` |
-| Modern workflow | `pip install -r` | `uv sync` / `uv run` |
-
-## 🐍 Python Version Note
-
-This project **requires Python 3.7+**. uv will use whatever Python 3.x is on your PATH. To use a specific version:
-
-```bash
-# Install a specific Python version through uv
-uv python install 3.11
-uv python pin 3.11
-
-# Or just use system Python
-uv venv --python 3.10
-```
-
-## 📋 Migration Path
-
-### If you were using pip before:
-
-1. Install uv: `pip install uv` or download from astral.sh
-2. Run: `uv venv && . .venv\Scripts\Activate.ps1 && uv pip install -r requirements.txt`
-3. Run: `uv run python -m app.main`
-4. Optional: `uv sync` for lockfile benefits
-
-### If you want to switch from `requirements.txt` to pure pyproject.toml:
-
-1. Move all deps to `pyproject.toml` `[project.dependencies]`
-2. Run: `uv sync --relock`
-3. Remove `requirements.txt` if desired (or keep for compatibility)
-
-## 🧪 Verification
-
-To verify the uv setup works:
-
-```bash
-# After running install-with-uv.ps1 or manual uv setup
-uv run python -m app.main 2>&1 | head -20
-# Should show: "Motor iniciado | modo=paper fuente=synthetic..."
-```
-
-Or test the API:
-
-```bash
 curl http://127.0.0.1:8080/health
-curl -H "X-API-Token: autotrader-secret-token-2026" http://127.0.0.1:8080/status
 ```
-
-## 📚 Related Files Created
-
-1. **`.env`** - Configuration for synthetic mode (already created)
-2. **`pyproject.toml`** - uv project configuration
-3. **`README_UV.md`** - Documentation
-4. **`install-with-uv.ps1`** - Installation script
-5. **`CONFIGURATION_STATUS.md`** - Project configuration summary
-
----
-
-**Summary**: The AutoTrader project now has full uv support. You can use either the traditional `pip install -r requirements.txt` approach or the modern `uv sync` / `uv run` workflow. The `pyproject.toml` provides metadata and dependency information that uv uses, while maintaining backwards compatibility with the existing `requirements.txt`.
