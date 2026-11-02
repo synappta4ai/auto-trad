@@ -1,8 +1,9 @@
 # AutoTrader — sistema de trading automático con auto-ajuste
 
-Bot de trading para correr 24/7, en local o en Docker. Todo se configura desde
-`.env`: puerto, topes de riesgo, estrategias, frecuencia de reentrenamiento y
-reglas de auto-ajuste. Incluye un **panel web** (`/`) para iniciar, detener y
+Bot de trading para correr 24/7, en local o en Docker. La configuración (puerto,
+topes de riesgo, estrategias, frecuencia de reentrenamiento y reglas de
+auto-ajuste) vive en la base SQLite y se edita desde el panel; `.env` solo trae
+lo necesario para arrancar. Incluye un **panel web** (`/`) para iniciar, detener y
 pausar el motor sin tocar la consola, con páginas aparte para resultados,
 configuración y logs.
 
@@ -77,8 +78,9 @@ reentrenamiento en la demo: `RETRAIN_INTERVAL_HOURS=0.05` y `POLL_SECONDS=5`.
 Para datos reales sin arriesgar nada: `DATA_SOURCE=exchange`, `MODE=paper`
 (usa velas reales y opera en simulado).
 
-Cambiar cualquier valor: edita `.env` y reinicia (`docker compose up -d` en
-Docker, Ctrl+C y `uv run ...` en local). El estado persiste en SQLite.
+Cambiar cualquier valor: hazlo en `/config` (lo que exija reinicio lo avisa) o
+edita `.env` para lo de arranque y reinicia (`docker compose up -d` en Docker,
+Ctrl+C y `uv run ...` en local). El estado persiste en SQLite.
 
 ### Panel web
 
@@ -107,12 +109,13 @@ Docker, Ctrl+C y `uv run ...` en local). El estado persiste en SQLite.
 
 Las páginas están separadas para que cada una se lea sin ruido: `/` (control y
 estado en vivo), `/results` (veredicto en lenguaje llano, métricas de operación,
-reglas de aceptación, historial de entrenamientos y trades), `/config` (los 89
+reglas de aceptación, historial de entrenamientos y trades), `/config` (los 86
 parámetros editables) y `/logs` (proceso y eventos). `/ui` redirige a `/` para no
 romper enlaces antiguos.
 
-`.env` se carga automáticamente al ejecutar desde la raíz del proyecto. Las
-variables ya definidas en el entorno tienen prioridad (así manda Docker).
+Al arrancar, `app/config.py` lee `.env` y después `settings.load()` aplica los
+parámetros guardados en la base, que **mandan sobre el entorno**. La tabla
+`settings` es la fuente de verdad: el panel escribe ahí, no en `.env`.
 
 | Variable | Default | Qué hace |
 | --- | --- | --- |
@@ -312,7 +315,7 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 | `GET /api/trades?limit=` · `/api/equity` · `/api/events`            | Historial de operaciones, curva de equity y eventos del motor                                  |
 | `GET /api/logs?level=&q=&limit=`                                    | Registro del proceso en memoria (últimas 4000 líneas), filtrable por nivel y texto             |
 | `GET /api/config`                                                   | Configuración efectiva (secretos ocultos)                                                     |
-| `GET /api/settings` · `POST /api/settings`                          | Parámetros editables: lista con valores actuales y guardado en `.env`                          |
+| `GET /api/settings` · `POST /api/settings`                          | Parámetros editables: lista con valores actuales y guardado en la base de datos                |
 | `GET /api/presets` · `POST /api/presets/apply?pid=`               | Recetas de configuración con objetivo concreto (iterar rápido, ampliar la búsqueda, estricto…) |
 | `GET /api/data` · `GET /api/lab`                                   | Velas guardadas en local y estado del laboratorio                                              |
 | `POST /api/lab/fetch` · `POST /api/lab/train?symbol=&bars=`        | Descargar histórico / entrenar walk-forward sobre la caché, sin tocar al bot                    |
@@ -320,7 +323,7 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 | `POST /api/retrain` · `/api/halt` · `/api/resume` · `/api/close_all` | Control manual                                                                               |
 | `POST /api/train_mode?mode=scheduled\|continuous`                   | Cambia el modo de aprendizaje en caliente                                                     |
 
-Las páginas `/`, `/results`, `/config` y `/logs` son HTML y no piden cabecera. Los nombres antiguos de los endpoints (`/status`, `/learning`, `/trades`, `/equity`, `/events`, `/settings`, `/start`, `/stop`, `/retrain`, `/train_mode`, `/halt`, `/resume`, `/close_all`, `/health`) siguen respondiendo como alias sin documentar, pero **`/config` y `/logs` ahora son páginas**: sus datos están en `/api/config` y `/api/logs`.
+Las páginas `/`, `/results`, `/config` y `/logs` piden la misma autenticación que la API: HTTP Basic (el navegador lo pregunta una vez) o `X-API-Token`. Los nombres antiguos de los endpoints (`/status`, `/learning`, `/trades`, `/equity`, `/events`, `/settings`, `/start`, `/stop`, `/retrain`, `/train_mode`, `/halt`, `/resume`, `/close_all`, `/health`) siguen respondiendo como alias sin documentar, pero **`/config` y `/logs` ahora son páginas**: sus datos están en `/api/config` y `/api/logs`.
 
 ### Recetas y laboratorio
 
@@ -329,7 +332,7 @@ La página `/config` empieza con dos bloques pensados para llegar antes a una co
 - **Recetas**: paquetes de parámetros con un objetivo declarado («iterar en segundos», «que la rejilla opere»,
   «ampliar la búsqueda», «veredicto inmediato», «solo lo que aguanta», «dejarlo corriendo»). Cada tarjeta dice
   para qué sirve, lo que tarda, qué cambia y qué tiene de trampa; se aplican con `POST /api/presets/apply?pid=`,
-  que valida, guarda en `.env` y entra en caliente (avisando de lo que exija reinicio).
+  que valida, guarda en la base y entra en caliente (avisando de lo que exija reinicio).
 - **Laboratorio**: las velas que descarga el bot se guardan en SQLite (`candles`). `POST /api/lab/fetch` baja
   histórico ahora y `POST /api/lab/train` lanza un walk-forward completo sobre esa caché en segundos, sin
   esperar al mercado ni al ciclo de 24 h y **sin tocar campeones, posiciones ni el estado del motor**. El
@@ -402,14 +405,14 @@ detenido).
 
 ### Configurar desde el panel
 
-La página `/config` lista 89 parámetros (símbolos, riesgo, costes, ventanas de entrenamiento, rejillas de estrategias, protección y autoajuste) con su valor actual. Al guardar:
+La página `/config` lista 86 parámetros (símbolos, riesgo, costes, ventanas de entrenamiento, rejillas de estrategias, protección y autoajuste) con su valor actual. Al guardar:
 
 - se valida sobre una copia de la configuración, incluidas las comprobaciones cruzadas (por ejemplo `HISTORY_BARS` frente a las ventanas del walk-forward): si algo no cuadra no se guarda nada y el panel muestra **todos** los errores juntos;
-- se reescribe **solo la clave cambiada** en `.env`, conservando comentarios y el resto de líneas, con copia de seguridad en `.env.bak`;
+- se guarda **solo la clave cambiada** en la tabla `settings` de la base (el resto de parámetros no se toca);
 - se aplica al instante si el motor lo lee en cada ciclo (riesgo, costes, símbolos, aprendizaje, watchdog). Lo que se construye una vez al arrancar (modo, fuente de datos, exchange, temporalidad, puerto, capital inicial, prefijo de órdenes, activar el watchdog) lleva la etiqueta **reinicio** y entra en vigor al reiniciar el proceso;
 - añadir un símbolo lo incorpora al feed y pide un reentrenamiento para que tenga campeón; quitarlo exige que no haya posición abierta en él.
 
-`EXCHANGE_API_KEY`, `EXCHANGE_API_SECRET`, `API_TOKEN` y `LIVE_CONFIRM` no aparecen en el panel: se editan a mano en `.env`. Pasar a `MODE=live` desde el panel solo funciona si esas tres cosas ya están configuradas; si no, la validación lo rechaza y explica qué falta.
+`EXCHANGE_API_KEY`, `EXCHANGE_API_SECRET`, `API_TOKEN`, `PANEL_USER`/`PANEL_PASSWORD` y `LIVE_CONFIRM` no aparecen en el panel: se editan a mano en `.env`. Pasar a `MODE=live` desde el panel solo funciona si esas tres cosas ya están configuradas; si no, la validación lo rechaza y explica qué falta.
 
 ---
 
@@ -445,7 +448,7 @@ CONFIGURATION_STATUS.md   estado actual de la configuración
 README_UV.md              documentación de uv
 CONTEXT_UV.md             contexto de la integración uv
 app/
-  config.py           carga de .env, valores y validación
+  config.py           arranque desde .env y valores por defecto
   data.py             feed sintético y feed ccxt
   strategies.py       indicadores y las 4 estrategias
   sizing.py           fórmulas de sizing y stop/tp (motor + simulador)
@@ -456,7 +459,7 @@ app/
   broker.py           paper y ccxt (órdenes, stops nativos, client order id)
   reconcile.py        conciliación con el exchange al arrancar (solo live)
   watchdog.py         avisa si el ciclo del motor deja de avanzar
-  settings.py         parámetros editables desde el panel: validación, .env y aplicación en caliente
+  settings.py         parámetros editables: validación, base de datos y aplicación en caliente
   api.py              API FastAPI (/api/*) + páginas web (/, /results, /config, /logs)
   logs.py             buffer en memoria del registro del proceso (página /logs)
   main.py             arranque: motor + uvicorn
@@ -498,7 +501,7 @@ docker compose down -v           # parar y borrar estado/historial
 | Síntoma | Causa / solución |
 | --- | --- |
 | `[Errno 10048]` al arrancar | otro proceso ocupa el puerto: ciérralo o cambia `API_PORT` |
-| `401 X-API-Token inválido` | el header no coincide con `API_TOKEN` cargado desde `.env` |
+| `401 credenciales inválidas` | usa HTTP Basic (`PANEL_USER`/`PANEL_PASSWORD`) o un `X-API-Token` que coincida con `API_TOKEN` |
 | El panel dice "sin conexión" | el servidor no está arriba o cambió `API_PORT`; revisa la consola |
 | No hay operaciones | el walk-forward no halló ventaja (`sin_ventaja`); ver nota de demo en la sección 1 |
 | `uv` no reconocido | instala uv y abre una consola nueva: `irm https://astral.sh/uv/install.ps1 \| iex` |

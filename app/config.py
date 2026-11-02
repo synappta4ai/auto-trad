@@ -1,4 +1,10 @@
-"""Configuración: TODO se lee de variables de entorno (.env). Ver .env.example."""
+"""Configuración de arranque.
+
+`.env` solo trae lo imprescindible para abrir la base (ruta de datos, credenciales
+del panel, claves del exchange). El resto de parámetros vive en la tabla
+`settings` de SQLite: `settings.load()` los aplica al arrancar y la base manda
+sobre el entorno cuando hay conflicto.
+"""
 import os
 
 LIVE_PHRASE = "I_UNDERSTAND_THE_RISK"
@@ -80,6 +86,8 @@ class Config:
         self.log_level = _s("LOG_LEVEL", "INFO").upper()
         self.data_dir = _s("DATA_DIR", "/data")
         self.api_token = _s("API_TOKEN", "")
+        self.panel_user = _s("PANEL_USER", "")          # HTTP Basic del panel (arranque)
+        self.panel_password = _s("PANEL_PASSWORD", "")  # contraseña del panel (arranque)
         self.api_bind = _s("API_BIND", "127.0.0.1")
         self.api_port = _i("API_PORT", 8080)
         self.auto_start = _b("AUTO_START", True)   # arranca el motor al iniciar el proceso
@@ -265,6 +273,7 @@ class Config:
 
     def public(self):
         d = {k: v for k, v in self.__dict__.items()}
-        for k in ("api_key", "api_secret", "api_password", "api_token", "live_confirm"):
+        for k in ("api_key", "api_secret", "api_password", "api_token", "live_confirm",
+                  "panel_password"):
             d[k] = "***" if d.get(k) else ""
         return d

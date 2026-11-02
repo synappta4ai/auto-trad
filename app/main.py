@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 
+from . import settings
 from .api import create_app
 from .broker import CcxtBroker, PaperBroker
 from .config import Config
@@ -37,11 +38,16 @@ def main():
     if not token:
         token = secrets.token_urlsafe(24)
         log.warning("API_TOKEN vacio: token temporal generado -> %s (definelo en .env para que sea fijo)", token)
+    if not (cfg.panel_user and cfg.panel_password):
+        log.warning("sin PANEL_USER/PANEL_PASSWORD: el panel queda accesible con el token")
     if cfg.mode == "live":
         log.warning("*** MODO LIVE: se enviaran ordenes reales a %s (sandbox=%s) ***", cfg.exchange, cfg.exchange_sandbox)
 
     # --- componentes ---
     store = Store(cfg.data_dir)
+    loaded = settings.load(cfg, store)   # la base manda; migra desde .env la primera vez
+    log.info("configuración cargada de la base: %s parámetros%s", len(loaded["applied"]),
+             " (migrados desde .env)" if loaded["migrated"] else "")
     feed = make_feed(cfg, store)
     broker = CcxtBroker(cfg, feed) if cfg.mode == "live" else PaperBroker(cfg)
     engine = Engine(cfg, store, feed, broker)

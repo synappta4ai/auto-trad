@@ -1,10 +1,12 @@
-"""Configuración editable desde el panel: registro, validación, .env y aplicación."""
+"""Configuración editable desde el panel: registro, validación, base y aplicación."""
+import tempfile
 import threading
 
 import pytest
 
 from app import settings
 from app.config import Config
+from app.store import Store
 
 
 @pytest.fixture
@@ -29,6 +31,7 @@ class FakeEngine:
         self.events = []
         self.train_mode = "scheduled"
         self.retrains = 0
+        self.store = Store(tempfile.mkdtemp(prefix="at-store-"))
 
     def _event(self, typ, data):
         self.events.append((typ, data))
@@ -114,66 +117,75 @@ def test_varios_errores_a_la_vez(cfg):
 
 
 # --------------------------------------------------------------------------- .env
-def test_guarda_y_aplica_en_caliente(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_guarda_y_aplica_en_caliente(cfg):
     eng = FakeEngine()
     res = settings.update(eng, cfg, {"RISK_PER_TRADE_PCT": "1.5", "MAX_OPEN_POSITIONS": "2"})
     assert cfg.risk_per_trade_pct == 1.5 and cfg.max_open_positions == 2
     assert set(res["applied"]) == {"RISK_PER_TRADE_PCT", "MAX_OPEN_POSITIONS"}
     assert res["restart_required"] == []
-    text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "RISK_PER_TRADE_PCT=1.5" in text and "MAX_OPEN_POSITIONS=2" in text
+    saved = eng.store.load_settings()
+    assert saved["RISK_PER_TRADE_PCT"] == "1.5" and saved["MAX_OPEN_POSITIONS"] == "2"
     assert eng.events and eng.events[-1][0] == "config"
 
 
-def test_conserva_comentarios_y_secretos(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text(
-        "# config real\nEXCHANGE_API_KEY=secreto123\nRISK_PER_TRADE_PCT=0.50\n", encoding="utf-8")
-    settings.update(FakeEngine(), cfg, {"RISK_PER_TRADE_PCT": "0.75"})
-    text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "# config real" in text
-    assert "EXCHANGE_API_KEY=secreto123" in text          # el secreto no se toca
-    assert "RISK_PER_TRADE_PCT=0.75" in text
-    assert "RISK_PER_TRADE_PCT=0.50" in (tmp_path / ".env.bak").read_text(encoding="utf-8")
+def test_los_secretos_no_van_a_la_base(cfg):
+    eng = FakeEngine()
+    settings.update(eng, cfg, {"RISK_PER_TRADE_PCT": "0.75"})
+    saved = eng.store.load_settings()
+    assert not set(saved) & set(settings.SECRET_ENV)
+    assert settings.SECRET_ENV                  # y siguen existiendo en .env
 
 
-def test_clave_ausente_se_anade_al_final(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text("# vacia\n", encoding="utf-8")
-    settings.update(FakeEngine(), cfg, {"POLL_SECONDS": "30"})
-    text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "# vacia" in text and "POLL_SECONDS=30" in text
+def test_los_cambios_se_acumulan_en_la_base(cfg):
+    eng = FakeEngine()
+    settings.update(eng, cfg, {"POLL_SECONDS": "30"})
+    settings.update(eng, cfg, {"MAX_OPEN_POSITIONS": "2"})
+    saved = eng.store.load_settings()
+    assert saved["POLL_SECONDS"] == "30" and saved["MAX_OPEN_POSITIONS"] == "2"
 
 
-def test_un_solo_bloque_del_panel(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    settings.update(FakeEngine(), cfg, {"POLL_SECONDS": "30"})
-    settings.update(FakeEngine(), cfg, {"MAX_OPEN_POSITIONS": "2"})
-    text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert text.count("# --- editado desde el panel web") == 1
-    assert "POLL_SECONDS=30" in text and "MAX_OPEN_POSITIONS=2" in text
+def test_la_base_manda_al_arrancar(cfg):
+    store = Store(tempfile.mkdtemp(prefix="at-store-"))
+    store.save_settings({"POLL_SECONDS": "45", "SYMBOLS": "BTC/USDT"})
+    res = settings.load(cfg, store)
+    assert res["migrated"] is False
+    assert cfg.poll_seconds == 45 and cfg.symbols == ["BTC/USDT"]
 
 
-def test_lo_que_requiere_reinicio_solo_se_guarda(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    res = settings.update(FakeEngine(), cfg, {"API_PORT": "9999", "POLL_SECONDS": "30"})
-    assert res["restart_required"] == ["API_PORT"]
-    assert cfg.api_port == 8080           # no se aplica en caliente
+def test_primera_vez_migra_desde_el_entorno(cfg):
+    store = Store(tempfile.mkdtemp(prefix="at-store-"))
+    cfg.poll_seconds = 77
+    res = settings.load(cfg, store)
+    assert res["migrated"] is True
+    assert store.load_settings()["POLL_SECONDS"] == "77"
+    assert cfg.poll_seconds == 77
+
+
+def test_un_valor_guardado_invalido_no_arranca(cfg):
+    store = Store(tempfile.mkdtemp(prefix="at-store-"))
+    store.save_settings({"HISTORY_BARS": "500"})
+    with pytest.raises(ValueError, match="HISTORY_BARS"):
+        settings.load(cfg, store)
+
+
+def test_lo_que_requiere_reinicio_solo_se_guarda(cfg):
+    eng = FakeEngine()
+    res = settings.update(eng, cfg, {"INITIAL_CAPITAL": "2500", "POLL_SECONDS": "30"})
+    assert res["restart_required"] == ["INITIAL_CAPITAL"]
+    assert cfg.initial_capital == 1000    # no se aplica en caliente
     assert cfg.poll_seconds == 30
-    assert "API_PORT=9999" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert eng.store.load_settings()["INITIAL_CAPITAL"] == "2500.0"
 
 
-def test_un_valor_invalido_no_escribe_nada(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_un_valor_invalido_no_escribe_nada(cfg):
+    eng = FakeEngine()
     with pytest.raises(ValueError):
-        settings.update(FakeEngine(), cfg, {"STOP_ATR_MULT": "0"})
-    assert not (tmp_path / ".env").exists()
+        settings.update(eng, cfg, {"STOP_ATR_MULT": "0"})
+    assert eng.store.load_settings() == {}
     assert cfg.stop_atr_mult == 2.0
 
 
-def test_sin_cambios_es_error(cfg, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_sin_cambios_es_error(cfg):
     with pytest.raises(ValueError, match="cambios"):
         settings.update(FakeEngine(), cfg, {})
 
@@ -201,7 +213,7 @@ def test_simbolo_nuevo_sin_mercado_no_se_aplica(cfg, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="no existe"):
         settings.update(eng, cfg, {"SYMBOLS": "BTC/USDT,ETH/USDT,XX/USDT"})
     assert cfg.symbols == ["BTC/USDT", "ETH/USDT"]
-    assert not (tmp_path / ".env").exists()
+    assert eng.store.load_settings() == {}
 
 
 def test_no_se_puede_quitar_un_simbolo_con_posicion(cfg, tmp_path, monkeypatch):
@@ -210,7 +222,7 @@ def test_no_se_puede_quitar_un_simbolo_con_posicion(cfg, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="posición abierta"):
         settings.update(eng, cfg, {"SYMBOLS": "BTC/USDT"})
     assert cfg.symbols == ["BTC/USDT", "ETH/USDT"]
-    assert not (tmp_path / ".env").exists()
+    assert eng.store.load_settings() == {}
 
 
 def test_quitar_simbolo_sin_posicion_limpia_estado(cfg, tmp_path, monkeypatch):

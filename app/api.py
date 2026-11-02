@@ -1,11 +1,13 @@
 """API de monitoreo y control.
 
-Cabecera requerida en todo salvo `/api/health` y las paginas HTML:
-    X-API-Token: <API_TOKEN>
+Autenticación en todo salvo `/api/health`, incluido el panel:
+    HTTP Basic con PANEL_USER / PANEL_PASSWORD (lo pide el navegador una vez)
+    o la cabecera `X-API-Token: <API_TOKEN>` para clientes y scripts.
 
 Paginas:      /  (panel)   /results (resultados)   /config (configuracion)   /logs
 Endpoints:    /api/<recurso>  (los nombres antiguos siguen respondiendo como alias)
 """
+import base64
 import hmac
 import json
 
@@ -883,7 +885,7 @@ _BODY_CONFIG = """
   <div class="panel">
     <h2>Recetas</h2>
     <div class="cfg-note">Paquetes de ajustes con un objetivo concreto. Se aplican igual que un cambio a mano:
-      validan, se guardan en <code>.env</code> y entran en caliente; lo que necesite reinicio se avisa.</div>
+      validan, se guardan en la base de datos y entran en caliente; lo que necesite reinicio se avisa.</div>
     <div id="presetGrid" class="presets"><span class="empty">cargando...</span></div>
     <div id="presetMsg" class="dim"></div>
   </div>
@@ -907,10 +909,11 @@ _BODY_CONFIG = """
   </div>
   <div class="panel">
     <h2>Parámetros</h2>
-    <div class="cfg-note">Cada valor se guarda en <code>.env</code> al pulsar Guardar (el anterior queda en
-      <code>.env.bak</code>). Lo marcado <span class="tag">reinicio</span> se aplica al reiniciar el proceso;
-      el resto entra en el siguiente ciclo. <code>EXCHANGE_API_KEY</code>, <code>API_TOKEN</code> y
-      <code>LIVE_CONFIRM</code> solo se editan en <code>.env</code>.</div>
+    <div class="cfg-note">Cada valor se guarda en la base de datos al pulsar Guardar; <code>.env</code> queda
+      solo para el arranque. Lo marcado <span class="tag">reinicio</span> se aplica al reiniciar el proceso;
+      el resto entra en el siguiente ciclo. <code>EXCHANGE_API_KEY</code>, <code>API_TOKEN</code>,
+      <code>PANEL_USER</code>/<code>PANEL_PASSWORD</code> y <code>LIVE_CONFIRM</code> solo se editan en
+      <code>.env</code>.</div>
     <div id="cfgBody" class="cfg-body"><span class="empty">cargando...</span></div>
     <div class="cfg-actions">
       <button class="primary" id="btnCfgSave" onclick="saveConfig()">Guardar cambios</button>
@@ -1309,9 +1312,21 @@ def create_app(engine, cfg, store, token, lifespan=None):
     app = FastAPI(title="AutoTrader", version="1.1", lifespan=lifespan)
     lab = Lab(cfg, store, engine)
 
-    def auth(x_api_token: str = Header(default="")):
-        if not hmac.compare_digest(x_api_token.encode(), token.encode()):
-            raise HTTPException(status_code=401, detail="X-API-Token inválido")
+    def auth(authorization: str = Header(default=""), x_api_token: str = Header(default="")):
+        """Token para scripts o HTTP Basic con el usuario/contraseña del panel."""
+        if token and hmac.compare_digest(x_api_token.encode(), token.encode()):
+            return
+        if authorization.lower().startswith("basic ") and cfg.panel_user and cfg.panel_password:
+            try:
+                raw = base64.b64decode(authorization[6:].strip()).decode("utf-8")
+            except Exception:
+                raw = ""
+            user, _, pwd = raw.partition(":")
+            if (hmac.compare_digest(user.encode(), cfg.panel_user.encode())
+                    and hmac.compare_digest(pwd.encode(), cfg.panel_password.encode())):
+                return
+        raise HTTPException(status_code=401, detail="credenciales inválidas",
+                            headers={"WWW-Authenticate": 'Basic realm="AutoTrader"'})
 
     def add(path, fn, methods=("GET",), secure=True, legacy=True):
         """Registra `/api/<path>` y, si procede, el alias antiguo sin documentar."""
@@ -1365,7 +1380,7 @@ def create_app(engine, cfg, store, token, lifespan=None):
         return presets.listing(cfg)
 
     def presets_apply(pid: str):
-        """Aplica una receta (valida, guarda en .env y entra en caliente)."""
+        """Aplica una receta (valida, guarda en la base y entra en caliente)."""
         try:
             return presets.apply(engine, cfg, pid)
         except settings.Busy as exc:
@@ -1400,7 +1415,7 @@ def create_app(engine, cfg, store, token, lifespan=None):
             raise HTTPException(status_code=409, detail=str(exc))
 
     def settings_save(payload: dict):
-        """Valida, guarda en .env y aplica en caliente lo que se puede."""
+        """Valida, guarda en la base de datos y aplica en caliente lo que se puede."""
         values = payload.get("values") if isinstance(payload, dict) else None
         if not isinstance(values, dict) or not values:
             raise HTTPException(status_code=400, detail="falta 'values' con los cambios")
@@ -1478,10 +1493,10 @@ def create_app(engine, cfg, store, token, lifespan=None):
         return handler
 
     for key, path in (("dash", "/"), ("results", "/results"), ("config", "/config"), ("logs", "/logs")):
-        app.add_api_route(path, page(key), methods=["GET"],
-                          response_class=HTMLResponse, include_in_schema=False)
+        app.add_api_route(path, page(key), methods=["GET"], response_class=HTMLResponse,
+                          dependencies=[Depends(auth)], include_in_schema=False)
 
-    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui", include_in_schema=False, dependencies=[Depends(auth)])
     def ui():
         """/ui era el panel; ahora el panel está en la raíz."""
         return RedirectResponse("/", status_code=307)

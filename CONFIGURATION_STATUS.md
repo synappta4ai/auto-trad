@@ -2,13 +2,16 @@
 
 ## Estado actual
 
-- `.env` cargado automáticamente por `app/config.py` (sin `python-dotenv`). Las
-  variables ya definidas en el entorno tienen prioridad (Docker manda).
+- `.env` solo para arranque, cargado por `app/config.py` (sin `python-dotenv`).
+- La configuración (86 parámetros) vive en la tabla `settings` de SQLite:
+  `settings.load()` la aplica al arrancar y **manda sobre el entorno**.
+- Acceso al panel: HTTP Basic con `PANEL_USER`/`PANEL_PASSWORD`, o `X-API-Token`
+  para scripts. `/api/health` queda abierto para el healthcheck.
 - Ejecución con **uv** sobre CPython 3.11: `uv run python -m app.main`.
 - Motor en **bucle continuo** con arranque/parada por API (`POST /start`,
   `POST /stop`) y panel web en `http://127.0.0.1:8080/ui`.
 - Arranque en un clic: `start-autotrader.bat` / `start-autotrader.ps1`.
-- `MODE=paper` + `DATA_SOURCE=synthetic`: no requiere red ni claves.
+- `MODE=paper` + `DATA_SOURCE=exchange`: velas reales, sin claves ni dinero.
 
 ## Configuración activa
 

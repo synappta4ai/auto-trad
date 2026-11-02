@@ -1,19 +1,20 @@
 """Configuración editable desde el panel web.
 
-`.env` sigue siendo la única fuente de verdad: cada cambio se valida sobre una
-copia de la `Config` (incluye las comprobaciones cruzadas de `validate()`), se
-guarda en `.env` y, si el motor lo lee en cada ciclo, se aplica al instante.
-Lo que se construye una sola vez al arrancar (feed, broker, modo, puerto) se
-marca `hot=False`: se guarda y se avisa de que requiere reinicio.
+La fuente de verdad es la tabla `settings` de SQLite: cada cambio se valida
+sobre una copia de la `Config` (incluye las comprobaciones cruzadas de
+`validate()`) y se guarda en la base. Al arrancar, `load()` aplica lo guardado,
+así que `.env` queda solo para lo imprescindible (ruta de datos, credenciales
+del panel, claves del exchange).
+
+Lo que se construye una sola vez al arrancar (feed, broker, modo) se marca
+`hot=False`: se guarda y se avisa de que requiere reinicio. El puerto, la
+interfaz de escucha y el nivel de log son arranque puro y viven solo en `.env`.
 
 Las claves de API, el token del panel y `LIVE_CONFIRM` no se editan desde la
 web: quedan solo en `.env`.
 """
 import copy
-import datetime as dt
 import logging
-import os
-import shutil
 import threading
 
 log = logging.getLogger("settings")
@@ -170,11 +171,12 @@ FIELDS = [
     # --- arranque ------------------------------------------------------------
     f("MODE", "mode", "Modo", G_MODE, "choice", hot=False, options=["paper", "live"], danger=True,
       help="live exige LIVE_CONFIRM y claves ya presentes en .env. Se aplica al reiniciar."),
-    f("API_PORT", "api_port", "Puerto del panel", G_MODE, "int", hot=False),
-    f("API_BIND", "api_bind", "Interfaz de escucha", G_MODE, hot=False),
-    f("LOG_LEVEL", "log_level", "Nivel de log", G_MODE, "choice", hot=False,
-      options=["DEBUG", "INFO", "WARNING", "ERROR"]),
 ]
+
+# Parámetros que NO viven en la base: son arranque/deployment y se leen de `.env`.
+BOOTSTRAP_ENV = ("DATA_DIR", "AUTO_START", "RETRAIN_ON_START", "API_BIND", "API_PORT",
+                 "LOG_LEVEL", "API_TOKEN", "PANEL_USER", "PANEL_PASSWORD", "LIVE_CONFIRM") \
+    + ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "EXCHANGE_API_PASSWORD")
 
 REGISTRY = {x["env"]: x for x in FIELDS}
 
@@ -222,7 +224,7 @@ def parse(field, raw):
 
 
 def format_value(field, value):
-    """Valor de la Config -> texto para el formulario y para `.env`."""
+    """Valor de la Config -> texto para el formulario y para la base de datos."""
     if field["kind"] == "bool":
         return "true" if value else "false"
     if field["kind"] in ("csv_list", "csv_grid"):
@@ -262,46 +264,37 @@ def preview(cfg, values):
     return cand, typed
 
 
-# ------------------------------------------------------------------------ .env
-def env_path():
-    return os.path.join(os.getcwd(), ".env")
+# ------------------------------------------------- base de datos (fuente de verdad)
+def apply_saved(cfg, values):
+    """Aplica sobre `cfg` los valores guardados y valida el conjunto final."""
+    unknown = sorted(set(values) - set(REGISTRY))
+    for env, raw in values.items():
+        field = REGISTRY.get(env)
+        if field is not None:
+            setattr(cfg, field["attr"], parse(field, raw))
+    if unknown:
+        log.warning("parámetros guardados que ya no existen: %s", ", ".join(unknown))
+    cfg.validate()
+    return sorted(set(values) & set(REGISTRY))
 
 
-def save_env(updates, path=None):
-    """Reescribe solo las claves indicadas; conserva comentarios y el resto de líneas."""
-    path = path or env_path()
-    with _LOCK:
-        lines = []
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8-sig") as fh:
-                lines = fh.read().splitlines()
-            try:
-                shutil.copyfile(path, path + ".bak")
-            except OSError:
-                log.warning("no se pudo crear la copia de seguridad de %s", path)
-        pending = dict(updates)
-        out = []
-        for line in lines:
-            s = line.strip()
-            if s and not s.startswith("#") and "=" in s:
-                key = s.split("=", 1)[0].strip()
-                if key in pending:
-                    out.append(f"{key}={pending.pop(key)}")
-                    continue
-            out.append(line)
-        if pending:
-            marker = "# --- editado desde el panel web"
-            if not any(line.startswith(marker) for line in out):
-                stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                if out and out[-1].strip():
-                    out.append("")
-                out.append(f"{marker} ({stamp}) ---")
-            out += [f"{k}={v}" for k, v in pending.items()]
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("\n".join(out).rstrip("\n") + "\n")
-        os.replace(tmp, path)
-        return sorted(updates)
+def snapshot(cfg):
+    """Valores actuales listos para la base (migración desde el entorno)."""
+    return {env: format_value(field, getattr(cfg, field["attr"]))
+            for env, field in REGISTRY.items()}
+
+
+def load(cfg, store):
+    """Carga la configuración de la base y migra desde `.env` la primera vez."""
+    saved = store.load_settings()
+    migrated = not saved
+    if migrated:
+        saved = snapshot(cfg)
+        store.save_settings(saved)
+    applied = apply_saved(cfg, saved)
+    if migrated:
+        log.info("configuración migrada a la base de datos: %s parámetros", len(applied))
+    return {"applied": applied, "migrated": migrated}
 
 
 # ------------------------------------------------------------------- aplicación
@@ -332,7 +325,7 @@ def _check_symbols(engine, cfg, new):
 
 
 def update(engine, cfg, values):
-    """Valida, guarda en `.env` y aplica en caliente lo que se puede."""
+    """Valida, guarda en la base de datos y aplica en caliente lo que se puede."""
     if not isinstance(values, dict) or not values:
         raise ValueError("no hay cambios que guardar")
     with _LOCK:
@@ -344,10 +337,13 @@ def update(engine, cfg, values):
             added, _ = _check_symbols(engine, cfg, hot["SYMBOLS"])
             for sym in added:
                 engine.feed.add_symbol(sym)    # ValueError si el mercado no existe
+        store = getattr(engine, "store", None)
+        if store is None:
+            raise ValueError("el motor no tiene base de datos: no se puede guardar la configuración")
         try:
-            save_env({e: format_value(REGISTRY[e], v) for e, v in parsed.items()})
-        except OSError as exc:
-            raise ValueError(f"no se pudo escribir .env ({exc}): revisa permisos del archivo") from None
+            store.save_settings({e: format_value(REGISTRY[e], v) for e, v in parsed.items()})
+        except Exception as exc:      # sqlite3.Error, disco lleno, permisos...
+            raise ValueError(f"no se pudo guardar en la base de datos ({exc})") from None
         for env, val in hot.items():
             setattr(cfg, REGISTRY[env]["attr"], val)
         if "TRAIN_MODE" in hot:

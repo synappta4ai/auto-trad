@@ -43,6 +43,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS candles(symbol TEXT, timeframe TEXT, ts INTEGER,
                 open REAL, high REAL, low REAL, close REAL, volume REAL,
                 PRIMARY KEY(symbol, timeframe, ts));
+            CREATE TABLE IF NOT EXISTS settings(env TEXT PRIMARY KEY, value TEXT, updated REAL);
             """)
             self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.db.commit()
@@ -166,6 +167,26 @@ class Store:
             "DELETE FROM events WHERE rowid NOT IN "
             "(SELECT rowid FROM events ORDER BY ts DESC LIMIT ?)", (EVENTS_MAX_ROWS,))
         self.db.commit()
+
+    # --- configuración: la base es la fuente de verdad, .env solo arranque ------
+    def load_settings(self):
+        """Parámetros guardados (env -> valor en texto). Vacío = aún sin migrar."""
+        with self.lock:
+            rows = self.db.execute("SELECT env, value FROM settings").fetchall()
+        return {k: v for k, v in rows}
+
+    def save_settings(self, values):
+        """Guarda/actualiza parámetros. La próxima vez se cargan al arrancar."""
+        if not values:
+            return 0
+        now = time.time()
+        with self.lock:
+            self.db.executemany(
+                "INSERT INTO settings(env, value, updated) VALUES(?,?,?) "
+                "ON CONFLICT(env) DO UPDATE SET value=excluded.value, updated=excluded.updated",
+                [(k, str(v), now) for k, v in values.items()])
+            self.db.commit()
+        return len(values)
 
     def add_event(self, typ, data):
         with self.lock:

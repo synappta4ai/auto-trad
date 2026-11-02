@@ -3,7 +3,7 @@
 Cada receta responde a una pregunta distinta ("¿funciona el circuito?", "¿hay
 algo aprovechable?", "¿opero lo suficiente para medirlo?"). Se aplican con
 `settings.update`, así que pasan por la misma validación y el mismo guardado en
-`.env` que un cambio hecho a mano; nada de estados paralelos.
+la base de datos que un cambio hecho a mano; nada de estados paralelos.
 """
 import logging
 
