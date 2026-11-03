@@ -16,6 +16,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from . import presets, settings
 from .lab import Lab
+from .binary import BinaryLab
+from .live1m import Live1m
+from .sweep import Sweep
 from .logs import entries as log_entries
 
 # ---------------------------------------------------------------------------
@@ -143,6 +146,10 @@ _JS_CORE = """
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CAPITAL = __CAPITAL__;
+
+function esc(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
 
 function fmt(n, d) {
   const v = Number(n);
@@ -340,6 +347,9 @@ _BASE = """<!DOCTYPE html>
     <a href="/" __NAV_DASH__>Panel</a>
     <a href="/results" __NAV_RESULTS__>Resultados</a>
     <a href="/config" __NAV_CONFIG__>Configuración</a>
+    <a href="/sweep" __NAV_SWEEP__>Barridos</a>
+    <a href="/binary" __NAV_BINARY__>Binarias</a>
+    <a href="/binary1m" __NAV_LIVE1M__>1 minuto</a>
     <a href="/logs" __NAV_LOGS__>Logs</a>
     <a href="/docs" target="_blank" rel="noopener">API</a>
   </nav>
@@ -1209,10 +1219,6 @@ _BODY_LOGS = """
 _JS_LOGS = """
 let procTimer = null;
 
-function esc(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-}
-
 function lvlClass(l) {
   if (l === "ERROR" || l === "CRITICAL") return "ERR";
   if (l === "WARNING") return "WAR";
@@ -1284,10 +1290,599 @@ setInterval(refreshEvents, 5000);
 setInterval(refreshPills, 5000);
 """
 
+# ---------------------------------------------------------------- barridos
+_BODY_SWEEP = """
+  <style>
+    .sw-grid { display:flex; gap:10px; flex-wrap:wrap; }
+    .sw-tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+    .sw-tbl th, .sw-tbl td { text-align:left; padding:4px 7px; border-bottom:1px solid var(--line);
+                             white-space:nowrap; }
+    .sw-tbl th { color:var(--muted); font-weight:500; font-size:11.5px; }
+    .sw-scroll { overflow-x:auto; }
+  </style>
+  <div class="panel">
+    <h2>Barridos · símbolo × temporalidad</h2>
+    <div class="cfg-note">Prueba la misma rejilla en cada combinación de símbolo y temporalidad, con un
+      walk-forward independiente por celda, y guarda cada intento en la base. Sirve para responder la única
+      pregunta que importa: <b>¿la ventaja aparece una vez o se repite?</b> No toca campeones ni posiciones.</div>
+    <div class="cfg-row"><label for="swSymbols">Símbolos</label><div class="cfg-in">
+      <input type="text" id="swSymbols" placeholder="BTC/USDT,ETH/USDT,...">
+      <div class="cfg-help">Base/cotizada separadas por coma ·
+        <a href="#" onclick="swFillUniverse();return false;">cargar universo USDT</a></div>
+    </div></div>
+    <div class="cfg-row"><label>Temporalidades</label><div class="cfg-in">
+      <div id="swTfs" class="sw-grid"></div></div></div>
+    <div class="cfg-actions">
+      <label class="chk">velas <input type="number" id="swBars" min="300" step="100" style="width:92px"></label>
+      <label class="chk">folds <input type="number" id="swFolds" min="1" max="30" style="width:64px"></label>
+      <label class="chk">test <input type="number" id="swTest" min="20" step="50" style="width:84px"
+        title="velas de cada tramo fuera de muestra"></label>
+      <button class="primary" onclick="swStart()">Lanzar barrido</button>
+      <span id="swMsg" class="dim"></span>
+    </div>
+    <div id="swRun" class="dim"></div>
+    <div id="swSummary"></div>
+  </div>
+  <div class="panel">
+    <h2>Intentos guardados</h2>
+    <div class="cfg-note">Cada fila es una prueba con su resultado fuera de muestra. Un exceso negativo
+      frente a comprar y mantener significa que el bot habría ganado menos que no hacer nada.</div>
+    <div id="swTable" class="sw-scroll"><span class="empty">cargando...</span></div>
+  </div>
+"""
+
+_JS_SWEEP = """
+let swTimer = null, swTfList = [], swUniverse = [];
+
+function swVerdict(v) {
+  return ({ repetible: "ventaja repetida", aislado: "una sola celda",
+            sin_ventaja: "sin ventaja", sin_datos: "sin datos" })[v] || (v || "");
+}
+
+function swFillUniverse() {
+  if (swUniverse.length) $("swSymbols").value = swUniverse.join(",");
+}
+
+async function swLoad() {
+  try {
+    const d = await api("/api/sweep");
+    swTfList = d.timeframes || [];
+    swUniverse = d.universe || [];
+    const box = $("swTfs");
+    if (box && !box.dataset.ready) {
+      box.dataset.ready = "1";
+      box.innerHTML = swTfList.map((t) => '<label class="chk"><input type="checkbox" value="' + t + '"' +
+        (t === (d.cfg_timeframe || "1h") ? " checked" : "") + "> " + t + "</label>").join(" ");
+    }
+    if ($("swSymbols") && !$("swSymbols").value) $("swSymbols").value = (d.symbols || []).join(",");
+    if ($("swBars") && !$("swBars").value) $("swBars").value = d.history_bars;
+    if ($("swFolds") && !$("swFolds").value) $("swFolds").value = d.folds;
+    if ($("swTest") && !$("swTest").value) $("swTest").value = d.test_bars;
+    if ((d.run_symbols || []).length) {
+      $("swSymbols").value = d.run_symbols.join(",");
+      document.querySelectorAll("#swTfs input").forEach((x) => {
+        x.checked = (d.run_timeframes || []).indexOf(x.value) >= 0;
+      });
+      if (d.bars) $("swBars").value = d.bars;
+      if (d.run_folds) $("swFolds").value = d.run_folds;
+      swRunLine(d.run_symbols, d.run_timeframes, d.run_id);
+    }
+    renderSweep(d);
+    if (d.status !== "running") await swHistory();
+  } catch (e) {
+    $("swMsg").innerHTML = '<span class="neg">' + e.message + "</span>";
+  }
+}
+
+function renderSweep(d) {
+  if (d.status === "running") {
+    const c = d.current || {};
+    let t = "barrido en marcha · " + d.done + "/" + d.total;
+    if (c.symbol) t += " · " + c.symbol + " " + (c.timeframe || "");
+    if (c.stage) t += " · " + c.stage + " " + (c.done || 0) + "/" + (c.total || 0);
+    $("swMsg").textContent = t + " · " + fmtDur(Date.now() / 1000 - d.started);
+  } else if (d.status === "error") {
+    $("swMsg").innerHTML = '<span class="neg">' + d.error + "</span>";
+  } else if (d.status === "done") {
+    $("swMsg").textContent = "terminado · " + fmtDur(d.finished - d.started);
+  }
+  swSummary(d.summary || {});
+  if (d.status === "running" || d.status === "done") swTable(d.rows || []);
+}
+
+function swSummary(s) {
+  const box = $("swSummary");
+  if (!s || !s.cells) { box.innerHTML = ""; return; }
+  const best = s.best ? (" · mejor: " + s.best.symbol + " " + s.best.timeframe + " (" +
+    signed(s.best.excess_pct) + " pp)") : "";
+  box.innerHTML = '<div class="lab-item"><b>' + swVerdict(s.verdict) + "</b> · " + s.edge + " de " +
+    s.evaluated + " celdas con ventaja · " + s.passing + " pasan las puertas · " +
+    s.trials + " combinaciones probadas" + best + "</div><div class='dim'>" + (s.note || "") + "</div>";
+}
+
+function swTable(rows) {
+  const t = $("swTable");
+  if (!rows.length) { t.innerHTML = '<span class="empty">todavía sin intentos</span>'; return; }
+  t.innerHTML = '<table class="sw-tbl"><thead><tr><th>Celda</th><th>Decisión</th><th>Trades</th>' +
+    "<th>Sharpe</th><th>PF</th><th>DD %</th><th>Ret %</th><th>B&amp;H %</th><th>Exceso</th>" +
+    "<th>Comb.</th><th>s</th><th>Run</th></tr></thead><tbody>" +
+    rows.map((r) => {
+      const edge = r.sharpe !== null && r.sharpe !== undefined && (r.excess_pct || 0) > 0;
+      return "<tr><td>" + esc(r.symbol) + " <span class='dim'>" + esc(r.timeframe) + "</span></td><td class='" +
+        (edge ? "pos" : "neg") + "'>" + esc(r.decision || "-") + "</td><td>" +
+        (r.trades === null || r.trades === undefined ? "-" : r.trades) + "</td><td>" +
+        fmt(r.sharpe, 3) + "</td><td>" + fmt(r.pf, 2) + "</td><td>" + fmt(r.dd_pct, 1) + "</td><td>" +
+        signed(r.ret_pct) + "</td><td>" + signed(r.bh_pct) + "</td><td>" + signed(r.excess_pct) +
+        "</td><td>" + (r.candidates || "-") + "</td><td>" + fmt(r.seconds, 1) + "</td><td class='dim'>" +
+        esc(r.run_id || "-") + "</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+async function swStart() {
+  const symbols = ($("swSymbols").value || "").trim();
+  const tfs = Array.from(document.querySelectorAll("#swTfs input:checked")).map((x) => x.value);
+  if (!symbols) { $("swMsg").textContent = "indica al menos un símbolo"; return; }
+  if (!tfs.length) { $("swMsg").textContent = "marca al menos una temporalidad"; return; }
+  const cells = symbols.split(",").filter((x) => x.trim()).length * tfs.length;
+  if (!confirm("Se van a probar " + cells + " celdas con walk-forward completo. " +
+      "Puede tardar bastante y no toca el bot. ¿Seguimos?")) return;
+  $("swMsg").textContent = "lanzando...";
+  const body = { symbols: symbols, timeframes: tfs,
+                 bars: Number($("swBars").value) || 0, folds: Number($("swFolds").value) || 0,
+                 test_bars: Number($("swTest").value) || 0 };
+  try {
+    await api("/api/sweep/start", { method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify(body) });
+    if (!swTimer) swTimer = setInterval(swPoll, 2000);
+    swPoll();
+  } catch (e) {
+    $("swMsg").innerHTML = '<span class="neg">' + e.message + "</span>";
+  }
+}
+
+async function swPoll() {
+  try {
+    const d = await api("/api/sweep");
+    renderSweep(d);
+    if (d.status !== "running") {
+      if (swTimer) { clearInterval(swTimer); swTimer = null; }
+      await swHistory();
+    }
+  } catch (e) {
+    if (swTimer) { clearInterval(swTimer); swTimer = null; }
+  }
+}
+
+async function swHistory() {
+  try {
+    const d = await api("/api/sweep/results?limit=300");
+    if (d.rows && d.rows.length) { swTable(d.rows); swRunLine(d.rows, d.latest); }
+  } catch (e) { /* silencioso */ }
+}
+
+function swRunLine(a, b, run) {
+  const el = $("swRun");
+  if (!el) return;
+  if (Array.isArray(a)) {
+    el.textContent = "barrido " + (run || "") + ": " + a.length + " símbolos (" + a.join(", ") +
+      ") × " + (b || []).join(", ");
+    return;
+  }
+  const rows = a || [], id = b || (rows[0] || {}).run_id;
+  const cells = rows.filter((r) => r.run_id === id);
+  if (!cells.length) { el.textContent = ""; return; }
+  const syms = [], tfs = [];
+  cells.forEach((r) => {
+    if (syms.indexOf(r.symbol) < 0) syms.push(r.symbol);
+    if (tfs.indexOf(r.timeframe) < 0) tfs.push(r.timeframe);
+  });
+  el.textContent = "último barrido " + id + ": " + syms.length + " símbolos (" + syms.join(", ") +
+    ") × " + tfs.join(", ") + " · " + cells.length + " celdas";
+}
+
+refreshPills();
+swLoad();
+setInterval(refreshPills, 5000);
+"""
+
+# ---------------------------------------------------------------- binarias (laboratorio)
+_BODY_BINARY = """
+  <style>
+    .bn-grid { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .bn-tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+    .bn-tbl th, .bn-tbl td { text-align:left; padding:4px 7px; border-bottom:1px solid var(--line);
+                             white-space:nowrap; }
+    .bn-tbl th { color:var(--muted); font-weight:500; font-size:11.5px; }
+    .bn-scroll { overflow-x:auto; }
+  </style>
+  <div class="panel">
+    <h2>Laboratorio binario · ¿supera el payout?</h2>
+    <div class="cfg-note">Backtest de opciones binarias sobre las velas guardadas: apuesta a que el precio se gira
+      (o sigue) tras un movimiento extremo y compara el acierto fuera de muestra con el umbral
+      <code>1/(1+payout)</code>. <b>No opera nada</b>: en la UE las binarias están prohibidas para
+      minoristas. Con «auto» se recalcula cada 60 s con las velas que el bot va guardando.</div>
+    <div class="cfg-row"><label for="bnSymbols">Símbolos</label><div class="cfg-in">
+      <input type="text" id="bnSymbols" placeholder="BTC/USDT,ETH/USDT,..."></div></div>
+    <div class="bn-grid">
+      <label class="chk">temporalidad <select id="bnTf"></select></label>
+      <label class="chk">horizonte <input type="number" id="bnHorizon" value="1" min="1" max="100"
+        style="width:70px" title="velas hasta el vencimiento"></label>
+      <label class="chk">ventana <input type="number" id="bnWindow" value="1" min="1" max="50"
+        style="width:64px" title="velas del movimiento de entrada"></label>
+      <label class="chk">cuantil <input type="number" id="bnQuantile" value="0.9" min="0.5" max="0.99"
+        step="0.01" style="width:76px" title="qué se considera movimiento extremo"></label>
+      <label class="chk">payout % <input type="number" id="bnPayout" value="85" min="50" max="99"
+        style="width:70px"></label>
+      <label class="chk">lado <select id="bnSide"><option value="reversion">reversión</option>
+        <option value="momentum">momentum</option></select></label>
+      <label class="chk">train <input type="number" id="bnTrain" value="20000" min="500" step="500"
+        style="width:88px"></label>
+      <label class="chk">test <input type="number" id="bnTest" value="4000" min="200" step="200"
+        style="width:80px"></label>
+      <label class="chk">folds <input type="number" id="bnFolds" value="5" min="1" max="20"
+        style="width:60px"></label>
+      <label class="chk"><input type="checkbox" id="bnRefresh"> traer velas nuevas</label>
+      <label class="chk"><input type="checkbox" id="bnAuto" onchange="bnToggleAuto()"> auto (60 s)</label>
+      <button class="primary" onclick="bnStart()">Calcular</button>
+      <span id="bnMsg" class="dim"></span>
+    </div>
+    <div id="bnSummary"></div>
+  </div>
+  <div class="panel">
+    <h2>Señal en la última vela</h2>
+    <div class="cfg-note">Qué haría la regla ahora mismo y cuándo vence. Solo hay apuesta si el movimiento
+      supera el umbral.</div>
+    <div id="bnSignals" class="bn-scroll"><span class="empty">sin calcular</span></div>
+  </div>
+  <div class="panel">
+    <h2>Resultados fuera de muestra</h2>
+    <div id="bnTable" class="bn-scroll"><span class="empty">sin calcular</span></div>
+  </div>
+"""
+
+_JS_BINARY = """
+let bnTimer = null, bnAuto = null, bnLast = null;
+
+async function bnLoad() {
+  try {
+    const d = await api("/api/binary");
+    bnLast = d;
+    const tf = $("bnTf");
+    if (tf && !tf.dataset.ready) {
+      tf.dataset.ready = "1";
+      const cur = (d.defaults || {}).timeframe || "1h";
+      tf.innerHTML = (d.timeframes || []).map((t) =>
+        "<option" + (t === cur ? " selected" : "") + ">" + t + "</option>").join("");
+    }
+    if ($("bnSymbols") && !$("bnSymbols").value) $("bnSymbols").value = (d.symbols || []).join(",");
+    bnRender(d);
+  } catch (e) {
+    $("bnMsg").innerHTML = '<span class="neg">' + e.message + "</span>";
+  }
+}
+
+function bnRead() {
+  return {
+    symbols: ($("bnSymbols").value || "").trim(),
+    timeframe: $("bnTf").value || "1h",
+    horizon: Number($("bnHorizon").value) || 1,
+    window: Number($("bnWindow").value) || 1,
+    quantile: Number($("bnQuantile").value) || 0.9,
+    payout: (Number($("bnPayout").value) || 85) / 100,
+    side: $("bnSide").value,
+    train: Number($("bnTrain").value) || 20000,
+    test: Number($("bnTest").value) || 4000,
+    folds: Number($("bnFolds").value) || 5,
+    refresh: $("bnRefresh").checked
+  };
+}
+
+async function bnStart(silent) {
+  const body = bnRead();
+  if (!body.symbols) { $("bnMsg").textContent = "indica al menos un símbolo"; return; }
+  if (!silent) $("bnMsg").textContent = "calculando...";
+  try {
+    await api("/api/binary/start", { method: "POST", headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify(body) });
+    if (!bnTimer) bnTimer = setInterval(bnPoll, 1500);
+    bnPoll();
+  } catch (e) {
+    if (!silent) $("bnMsg").innerHTML = '<span class="neg">' + e.message + "</span>";
+  }
+}
+
+async function bnPoll() {
+  try {
+    const d = await api("/api/binary");
+    bnRender(d);
+    if (d.status !== "running" && bnTimer) { clearInterval(bnTimer); bnTimer = null; }
+  } catch (e) {
+    if (bnTimer) { clearInterval(bnTimer); bnTimer = null; }
+  }
+}
+
+function bnToggleAuto() {
+  if (bnAuto) { clearInterval(bnAuto); bnAuto = null; }
+  if ($("bnAuto").checked) {
+    bnAuto = setInterval(() => {
+      api("/api/binary").then((d) => {
+        if (d.status !== "running") bnStart(true);
+      }).catch(() => {});
+    }, 60000);
+  }
+}
+
+function bnRender(d) {
+  bnLast = d;
+  if (d.status === "running") {
+    const c = d.current || {};
+    $("bnMsg").textContent = "calculando " + d.done + "/" + d.total +
+      (c.symbol ? " · " + c.symbol : "") + " · " + fmtDur(Date.now() / 1000 - d.started);
+  } else if (d.status === "error") {
+    $("bnMsg").innerHTML = '<span class="neg">' + esc(d.error || "error") + "</span>";
+  } else if (d.status === "done") {
+    $("bnMsg").textContent = "calculado · " + fmtDur((d.finished || 0) - (d.started || 0));
+  }
+  bnSummary(d.summary || {});
+  bnSignals(d.rows || []);
+  bnTable(d.rows || []);
+}
+
+function bnSummary(s) {
+  const box = $("bnSummary");
+  if (!s || !s.symbols) { box.innerHTML = ""; return; }
+  const label = { repetible: "ventaja repetida", aislado: "solo un símbolo",
+                  sin_ventaja: "sin ventaja", sin_datos: "sin datos" }[s.verdict] || s.verdict;
+  box.innerHTML = "<div class='lab-item'><b>" + label + "</b> · " + s.with_edge + " de " + s.symbols +
+    " símbolos superan el umbral · mediana " + fmt(s.median_hit_pct, 2) + "% frente a " +
+    fmt(s.breakeven_pct, 2) + "% que exige el payout</div>";
+}
+
+function bnSignals(rows) {
+  const box = $("bnSignals");
+  const ok = rows.filter((r) => r.signal);
+  if (!ok.length) { box.innerHTML = '<span class="empty">sin señales calculadas</span>'; return; }
+  box.innerHTML = "<table class='bn-tbl'><thead><tr><th>Símbolo</th><th>Precio</th><th>Movimiento</th>" +
+    "<th>Umbral</th><th>Extrema</th><th>Dirección</th><th>Vence</th></tr></thead><tbody>" +
+    ok.map((r) => {
+      const s = r.signal;
+      const dir = s.direction > 0 ? "compra" : (s.direction < 0 ? "venta" : "nada");
+      return "<tr><td>" + esc(r.symbol) + "</td><td>" + fmt(s.price, 4) + "</td><td>" +
+        signed(s.move_pct, 3) + "%</td><td>" + fmt(s.threshold_pct, 3) + "%</td><td class='" +
+        (s.extreme ? "pos" : "dim") + "'>" + (s.extreme ? "sí" : "no") + "</td><td class='" +
+        (s.extreme ? "pos" : "dim") + "'>" + (s.extreme ? dir : "esperar") + "</td><td class='dim'>" +
+        s.bars_to_expiry + " velas</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+function bnTable(rows) {
+  const box = $("bnTable");
+  const ok = rows.filter((r) => r.hit_pct !== undefined);
+  if (!ok.length) { box.innerHTML = '<span class="empty">sin calcular</span>'; return; }
+  box.innerHTML = "<table class='bn-tbl'><thead><tr><th>Símbolo</th><th>Apuestas</th><th>Acierto</th>" +
+    "<th>IC 95%</th><th>Umbral</th><th>EV/apuesta</th><th>Neto</th><th>Drawdown</th><th>Racha</th>" +
+    "<th>Veredicto</th></tr></thead><tbody>" +
+    ok.map((r) => "<tr><td>" + esc(r.symbol) + "</td><td>" + r.bets + "</td><td>" + fmt(r.hit_pct, 2) +
+      "%</td><td class='dim'>" + fmt(r.ci_low_pct, 2) + " – " + fmt(r.ci_high_pct, 2) + "</td><td>" +
+      fmt(r.breakeven_pct, 2) + "%</td><td class='" + (r.ev_per_bet > 0 ? "pos" : "neg") + "'>" +
+      signed(r.ev_per_bet, 4) + "</td><td>" + signed(r.net_stakes, 1) + "</td><td>" +
+      fmt(r.max_drawdown_stakes, 1) + "</td><td>" + r.worst_loss_streak + "</td><td class='" +
+      (r.verdict === "ventaja" ? "pos" : "neg") + "'>" + esc(r.verdict) + "</td></tr>").join("") +
+    "</tbody></table>";
+}
+
+refreshPills();
+bnLoad();
+setInterval(refreshPills, 5000);
+"""
+
+_BODY_LIVE1M = """
+  <style>
+    .lv-wrap { display:grid; grid-template-columns: 1fr 250px; gap:12px; align-items:start; }
+    .lv-chart { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px; }
+    .lv-chart svg { display:block; width:100%; height:230px; }
+    .lv-count { font-size:38px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:1px;
+                line-height:1.1; }
+    .lv-side { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+               min-height:120px; }
+    .lv-side .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); }
+    .lv-side .v { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }
+    .lv-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:9px; }
+    .lv-tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+    .lv-tbl th, .lv-tbl td { text-align:left; padding:4px 7px; border-bottom:1px solid var(--line);
+                             white-space:nowrap; }
+    .lv-tbl th { color:var(--muted); font-weight:500; font-size:11px; }
+    .lv-scroll { overflow-x:auto; }
+    @media (max-width:820px) { .lv-wrap { grid-template-columns:1fr; } }
+  </style>
+  <div class="panel">
+    <h2>Simulador 1 minuto · sin dinero real</h2>
+    <div class="cfg-note">Al cierre de cada vela de 1m abre una apuesta ficticia y la liquida al cierre de la vela
+      siguiente, con el payout que elijas. <b>No envía órdenes a ningún bróker</b>: solo lleva la cuenta.
+      Medido con velas de 1m el acierto ronda el 51,6 %, y un payout del 82 % exige un 54,95 % para no perder.</div>
+    <div class="bn-grid">
+      <label class="chk">símbolo <input type="text" id="lvSymbol" value="__SYMBOLS__" style="width:120px"></label>
+      <label class="chk">apuesta <input type="number" id="lvStake" value="5" min="1" step="1"
+        style="width:74px"></label>
+      <label class="chk">payout % <input type="number" id="lvPayout" value="82" min="50" max="99"
+        style="width:70px"></label>
+      <label class="chk">banca <input type="number" id="lvBank" value="1000" min="10" step="10"
+        style="width:86px"></label>
+      <label class="chk">modo <select id="lvMode"><option value="every">cada vela</option>
+        <option value="signal">solo señal extrema</option></select></label>
+      <label class="chk">cuantil <input type="number" id="lvQ" value="0.9" min="0.5" max="0.99"
+        step="0.01" style="width:70px"></label>
+      <button class="primary" onclick="lvStart()">Iniciar</button>
+      <button class="danger" onclick="lvStop()">Detener</button>
+      <span id="lvMsg" class="dim"></span>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>En vivo</h2>
+    <div class="lv-wrap">
+      <div class="lv-chart"><div id="lvChart"><span class="empty">sin datos</span></div></div>
+      <div class="lv-side" id="lvPending"><span class="empty">parado</span></div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>Cuenta ficticia</h2>
+    <div class="lv-grid" id="lvCards"><span class="empty">sin datos</span></div>
+  </div>
+  <div class="panel">
+    <h2>Últimas apuestas</h2>
+    <div id="lvBets" class="lv-scroll"><span class="empty">sin apuestas todavía</span></div>
+  </div>
+"""
+
+_JS_LIVE1M = """
+let lvTimer = null, lvLast = null;
+
+function lvCfg() {
+  return {
+    symbol: $("lvSymbol").value.trim(),
+    stake: Number($("lvStake").value) || 5,
+    payout: (Number($("lvPayout").value) || 82) / 100,
+    bankroll: Number($("lvBank").value) || 1000,
+    mode: $("lvMode").value,
+    quantile: Number($("lvQ").value) || 0.9,
+  };
+}
+
+async function lvStart() {
+  $("lvMsg").textContent = "arrancando…";
+  try {
+    const d = await api("/api/live1m/start", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(lvCfg()) });
+    $("lvMsg").textContent = "en marcha · " + d.symbol + " · " + d.mode;
+    lvPoll();
+  } catch (e) {
+    $("lvMsg").textContent = e.message;
+  }
+  lvLoad();
+}
+
+async function lvStop() {
+  try {
+    const d = await api("/api/live1m/stop", { method: "POST" });
+    $("lvMsg").textContent = "parado · " + d.settled + " apuestas liquidadas";
+  } catch (e) {
+    $("lvMsg").textContent = e.message;
+  }
+  lvLoad();
+}
+
+async function lvLoad() {
+  try {
+    lvRender(await api("/api/live1m"));
+  } catch (e) {
+    $("lvMsg").textContent = e.message;
+  }
+}
+
+function lvPoll() {
+  if (lvTimer) clearInterval(lvTimer);
+  lvTimer = setInterval(lvLoad, 2000);
+}
+
+function lvCard(k, v, s, cls) {
+  return "<div class='card'><div class='k'>" + k + "</div><div class='v " + (cls || "") + "'>" +
+    v + "</div><div class='s'>" + s + "</div></div>";
+}
+
+function lvChart(candles, pending) {
+  if (!candles || !candles.length) return "<span class='empty'>sin velas</span>";
+  const W = 640, H = 230, pad = 8;
+  let hi = -Infinity, lo = Infinity;
+  candles.forEach((c) => { hi = Math.max(hi, c.h); lo = Math.min(lo, c.l); });
+  if (pending) { hi = Math.max(hi, pending.entry); lo = Math.min(lo, pending.entry); }
+  const y = (v) => pad + (hi - v) / ((hi - lo) || 1) * (H - 2 * pad);
+  const w = (W - 2 * pad) / candles.length;
+  let s = "<svg viewBox='0 0 " + W + " " + H + "' preserveAspectRatio='none'>";
+  candles.forEach((c, i) => {
+    const x = pad + i * w + w / 2, up = c.c >= c.o;
+    const col = up ? "#35c46a" : "#e5484d";
+    s += "<line x1='" + x.toFixed(1) + "' x2='" + x.toFixed(1) + "' y1='" + y(c.h).toFixed(1) +
+         "' y2='" + y(c.l).toFixed(1) + "' stroke='" + col + "' stroke-width='1'/>";
+    const top = y(Math.max(c.o, c.c)), bot = y(Math.min(c.o, c.c));
+    s += "<rect x='" + (x - w * 0.3).toFixed(1) + "' y='" + top.toFixed(1) + "' width='" +
+         Math.max(1, w * 0.6).toFixed(1) + "' height='" + Math.max(1, bot - top).toFixed(1) +
+         "' fill='" + col + "'/>";
+  });
+  if (pending) {
+    s += "<line x1='" + pad + "' x2='" + (W - pad) + "' y1='" + y(pending.entry).toFixed(1) +
+         "' y2='" + y(pending.entry).toFixed(1) +
+         "' stroke='#4c8dff' stroke-dasharray='4 4' stroke-width='1'/>";
+  }
+  return s + "</svg>";
+}
+
+function lvPending(d) {
+  const p = d.pending;
+  if (!p) {
+    return "<div class='k'>estado</div><div class='v'>" + (d.running ? "esperando vela" : "parado") +
+      "</div>" + (d.error ? "<div class='neg' style='margin-top:6px;font-size:12px'>" + esc(d.error) +
+      "</div>" : "<div class='s dim' style='margin-top:6px'>pulsa Iniciar</div>");
+  }
+  const up = p.direction > 0;
+  return "<div class='k'>vence en</div><div class='lv-count' id='lvCount'>" + d.expires_in + "s</div>" +
+    "<div class='k' style='margin-top:10px'>apuesta</div><div class='v " + (up ? "pos" : "neg") +
+    "'>" + (up ? "COMPRA ↑" : "VENTA ↓") + "</div>" +
+    "<div class='k' style='margin-top:8px'>entrada</div><div class='v'>" + fmt(p.entry, 4) + "</div>" +
+    "<div class='k' style='margin-top:8px'>si acierta</div><div class='v pos'>+" +
+    fmt(p.stake * p.payout, 2) + "</div>" +
+    "<div class='k' style='margin-top:8px'>si falla</div><div class='v neg'>-" + fmt(p.stake, 2) + "</div>" +
+    "<div class='k' style='margin-top:8px'>vence</div><div class='v'>" + tsLabel(p.expiry_ts) + "</div>";
+}
+
+function lvBets(bets) {
+  if (!bets || !bets.length) return "<span class='empty'>sin apuestas todavía</span>";
+  return "<table class='lv-tbl'><thead><tr><th>hora</th><th>apuesta</th><th>entrada</th><th>cierre</th>" +
+    "<th>resultado</th><th>P&L</th><th>saldo</th></tr></thead><tbody>" +
+    bets.map((b) => {
+      const r = b.result || {};
+      const up = b.direction > 0;
+      return "<tr><td class='dim'>" + tsLabel(b.entry_ts) + "</td><td class='" +
+        (up ? "pos" : "neg") + "'>" + (up ? "compra" : "venta") + "</td><td>" + fmt(b.entry, 4) +
+        "</td><td>" + fmt(r.close, 4) + "</td><td class='" + (r.won ? "pos" : "neg") + "'>" +
+        (r.won ? "gana" : (r.tie ? "empate" : "pierde")) + "</td><td class='" +
+        (r.pnl > 0 ? "pos" : "neg") + "'>" + signed(r.pnl, 2) + "</td><td>" +
+        fmt(r.balance_after, 2) + "</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+function lvRender(d) {
+  lvLast = d;
+  const hit = d.hit_pct;
+  const cls = hit === null ? "dim" : (hit >= d.breakeven_pct ? "pos" : "neg");
+  $("lvCards").innerHTML = [
+    lvCard("saldo", fmt(d.balance, 2), "inicial " + fmt(d.bankroll, 2)),
+    lvCard("resultado", signed(d.net, 2), d.settled + " apuestas", d.net >= 0 ? "pos" : "neg"),
+    lvCard("acierto", hit === null ? "—" : fmt(hit, 2) + "%",
+           "umbral " + fmt(d.breakeven_pct, 2) + "%", cls),
+    lvCard("a favor / contra", d.wins + " / " + d.losses, "payout " + fmt(d.payout * 100, 0) + "%"),
+    lvCard("racha", d.streak > 0 ? "+" + d.streak : String(d.streak), "peor " + d.worst_streak),
+  ].join("");
+  $("lvChart").innerHTML = lvChart(d.chart, d.pending);
+  $("lvPending").innerHTML = lvPending(d);
+  $("lvBets").innerHTML = lvBets(d.bets);
+  if (!d.running && lvTimer) { clearInterval(lvTimer); lvTimer = null; }
+}
+
+setInterval(() => {
+  const p = lvLast && lvLast.pending, el = $("lvCount");
+  if (p && el) el.textContent = Math.max(0, Math.round(p.expiry_ts - Date.now() / 1000)) + "s";
+}, 250);
+
+lvLoad().then(() => { if (lvLast && lvLast.running) lvPoll(); });
+"""
+
 _PAGES = {
     "dash": ("Panel", _BODY_DASH, _JS_DASH),
     "results": ("Resultados", _BODY_RESULTS, _JS_RESULTS),
     "config": ("Configuración", _BODY_CONFIG, _JS_CONFIG),
+    "sweep": ("Barridos", _BODY_SWEEP, _JS_SWEEP),
+    "binary": ("Binarias", _BODY_BINARY, _JS_BINARY),
+    "live1m": ("1 minuto", _BODY_LIVE1M, _JS_LIVE1M),
     "logs": ("Logs", _BODY_LOGS, _JS_LOGS),
 }
 
@@ -1311,6 +1906,9 @@ def _render_page(key, token, cfg):
 def create_app(engine, cfg, store, token, lifespan=None):
     app = FastAPI(title="AutoTrader", version="1.1", lifespan=lifespan)
     lab = Lab(cfg, store, engine)
+    sweep = Sweep(cfg, store)
+    binary_lab = BinaryLab(cfg, store)
+    live_sim = Live1m(cfg, store)
 
     def auth(authorization: str = Header(default=""), x_api_token: str = Header(default="")):
         """Token para scripts o HTTP Basic con el usuario/contraseña del panel."""
@@ -1391,6 +1989,54 @@ def create_app(engine, cfg, store, token, lifespan=None):
     def data_info():
         """Velas guardadas en local y cuántas hacen falta para el walk-forward."""
         return lab.data_info()
+
+    def sweep_state():
+        """Estado del barrido en curso y sus filas (símbolo × temporalidad)."""
+        return sweep.snapshot()
+
+    def sweep_start(payload: dict):
+        """Lanza un barrido sobre la caché de velas (descarga lo que falte)."""
+        try:
+            return sweep.start(payload if isinstance(payload, dict) else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    def sweep_results(run_id: str = "", limit: int = 300):
+        """Intentos guardados, opcionalmente de un barrido concreto."""
+        rows = store.experiments(run_id or None, min(max(int(limit), 1), 5000))
+        return {"rows": rows, "run_id": run_id or None, "latest": store.latest_run_id()}
+
+    def binary_state():
+        """Laboratorio binario: estado del cálculo, señales y resultados."""
+        return binary_lab.snapshot()
+
+    def binary_start(payload: dict):
+        """Lanza el cálculo binario (solo mide; no opera ni conecta a un bróker)."""
+        try:
+            return binary_lab.start(payload if isinstance(payload, dict) else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    def live_state():
+        """Simulador 1m: saldo, apuesta en curso y últimas liquidaciones."""
+        return live_sim.snapshot()
+
+    def live_start(payload: dict):
+        """Arranca el simulador (paper: no hay bróker ni órdenes)."""
+        try:
+            return live_sim.start(payload if isinstance(payload, dict) else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    def live_stop():
+        """Detiene el simulador y devuelve cuántas apuestas liquidó."""
+        return live_sim.stop()
 
     def lab_state():
         """Estado del laboratorio y reporte de la última ejecución."""
@@ -1484,6 +2130,14 @@ def create_app(engine, cfg, store, token, lifespan=None):
     add("/lab", lab_state, legacy=False)
     add("/lab/fetch", lab_fetch, methods=("POST",), legacy=False)
     add("/lab/train", lab_train, methods=("POST",), legacy=False)
+    add("/sweep", sweep_state, legacy=False)
+    add("/sweep/start", sweep_start, methods=("POST",), legacy=False)
+    add("/sweep/results", sweep_results, legacy=False)
+    add("/binary", binary_state, legacy=False)
+    add("/binary/start", binary_start, methods=("POST",), legacy=False)
+    add("/live1m", live_state, legacy=False)
+    add("/live1m/start", live_start, methods=("POST",), legacy=False)
+    add("/live1m/stop", live_stop, methods=("POST",), legacy=False)
 
     # ------------------------------------------------------------------ páginas
     def page(key):
@@ -1492,7 +2146,9 @@ def create_app(engine, cfg, store, token, lifespan=None):
         handler.__name__ = f"page_{key}"
         return handler
 
-    for key, path in (("dash", "/"), ("results", "/results"), ("config", "/config"), ("logs", "/logs")):
+    for key, path in (("dash", "/"), ("results", "/results"), ("config", "/config"),
+                      ("sweep", "/sweep"), ("binary", "/binary"),
+                      ("live1m", "/binary1m"), ("logs", "/logs")):
         app.add_api_route(path, page(key), methods=["GET"], response_class=HTMLResponse,
                           dependencies=[Depends(auth)], include_in_schema=False)
 

@@ -307,7 +307,7 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 
 | Endpoint                                                            | Función                                                                                       |
 | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `GET /` · `/results` · `/config` · `/logs`                          | Páginas HTML: panel, resultados, configuración y logs (sin token: va embebido en la página)    |
+| `GET /` · `/results` · `/config` · `/sweep` · `/logs`               | Páginas HTML: panel, resultados, configuración, barridos y logs (sin token: va embebido)        |
 | `GET /api/health`                                                   | Estado básico (sin token; lo usa el healthcheck de Docker)                                     |
 | `GET /api/status`                                                   | Equity, caja, drawdown, posiciones, campeones, multiplicadores de riesgo                      |
 | `GET /api/learning`                                                 | Último reporte walk-forward por símbolo: folds, métricas OOS, decisión, motivos de rechazo    |
@@ -319,11 +319,13 @@ Los topes duros (secciones siguientes) **nunca** los modifica el aprendizaje: so
 | `GET /api/presets` · `POST /api/presets/apply?pid=`               | Recetas de configuración con objetivo concreto (iterar rápido, ampliar la búsqueda, estricto…) |
 | `GET /api/data` · `GET /api/lab`                                   | Velas guardadas en local y estado del laboratorio                                              |
 | `POST /api/lab/fetch` · `POST /api/lab/train?symbol=&bars=`        | Descargar histórico / entrenar walk-forward sobre la caché, sin tocar al bot                    |
+| `GET /api/sweep` · `POST /api/sweep/start`                         | Barrido símbolo × temporalidad: estado en curso y lanzamiento (JSON: `symbols`, `timeframes`)   |
+| `GET /api/sweep/results?run_id=&limit=`                            | Intentos guardados en `experiments`, con su OOS y su exceso frente a comprar y mantener         |
 | `POST /api/start` · `/api/stop`                                     | Arranca / detiene el bucle continuo del motor                                                 |
 | `POST /api/retrain` · `/api/halt` · `/api/resume` · `/api/close_all` | Control manual                                                                               |
 | `POST /api/train_mode?mode=scheduled\|continuous`                   | Cambia el modo de aprendizaje en caliente                                                     |
 
-Las páginas `/`, `/results`, `/config` y `/logs` piden la misma autenticación que la API: HTTP Basic (el navegador lo pregunta una vez) o `X-API-Token`. Los nombres antiguos de los endpoints (`/status`, `/learning`, `/trades`, `/equity`, `/events`, `/settings`, `/start`, `/stop`, `/retrain`, `/train_mode`, `/halt`, `/resume`, `/close_all`, `/health`) siguen respondiendo como alias sin documentar, pero **`/config` y `/logs` ahora son páginas**: sus datos están en `/api/config` y `/api/logs`.
+Las páginas `/`, `/results`, `/config`, `/sweep` y `/logs` piden la misma autenticación que la API: HTTP Basic (el navegador lo pregunta una vez) o `X-API-Token`. Los nombres antiguos de los endpoints (`/status`, `/learning`, `/trades`, `/equity`, `/events`, `/settings`, `/start`, `/stop`, `/retrain`, `/train_mode`, `/halt`, `/resume`, `/close_all`, `/health`) siguen respondiendo como alias sin documentar, pero **`/config` y `/logs` ahora son páginas**: sus datos están en `/api/config` y `/api/logs`.
 
 ### Recetas y laboratorio
 
@@ -339,6 +341,23 @@ La página `/config` empieza con dos bloques pensados para llegar antes a una co
   reporte queda en el historial con `reason: laboratorio`.
 
 Así se itera: descargar → entrenar → leer el veredicto → cambiar una receta o un parámetro → repetir.
+
+### Barridos: símbolo × temporalidad
+
+Con un solo símbolo no se distingue «no hay ventaja» de «mala suerte». La página `/sweep` lanza la misma
+rejilla sobre una matriz de símbolos y temporalidades: cada celda es un walk-forward independiente con su
+train/test, y **cada intento se guarda en la tabla `experiments`** con su Sharpe, profit factor, drawdown,
+retorno OOS, benchmark y exceso en puntos porcentuales.
+
+- **Ventaja repetida** (`repetible`): la celda pasa las puertas, bate a comprar y mantener, y lo hace en más de
+  un símbolo o temporalidad. Es lo único que merece pasar a papel.
+- **Una sola celda** (`aislado`): gana una de veinte con cientos de combinaciones probadas. Eso lo produce el
+  azar; el contador de intentos del panel está ahí para no engañarse.
+- **Sin ventaja**: no hay nada que operar; el bot sigue en liquidez.
+
+Se puede usar sin abrir el panel: `uv run python -m app.sweep --symbols BTC/USDT,ETH/USDT --timeframes 1h,4h
+--bars 44000 --folds 12`. Descarga lo que falte de la caché `candles`, entrena y escribe el veredicto; no toca
+campeones, posiciones ni el estado del motor.
 
 Documentación interactiva en `/docs` (Swagger). Por defecto el puerto solo escucha en `127.0.0.1`; para acceder remotamente usa un túnel SSH (`ssh -L 8080:127.0.0.1:8080 servidor`) o un reverse proxy con TLS. Si pones `API_BIND=0.0.0.0` sin proteger el puerto, cualquiera con tu token podría operar el bot.
 
@@ -460,7 +479,8 @@ app/
   reconcile.py        conciliación con el exchange al arrancar (solo live)
   watchdog.py         avisa si el ciclo del motor deja de avanzar
   settings.py         parámetros editables: validación, base de datos y aplicación en caliente
-  api.py              API FastAPI (/api/*) + páginas web (/, /results, /config, /logs)
+  sweep.py            barridos símbolo × temporalidad: matriz de intentos y veredicto del conjunto
+  api.py              API FastAPI (/api/*) + páginas web (/, /results, /config, /sweep, /logs)
   logs.py             buffer en memoria del registro del proceso (página /logs)
   main.py             arranque: motor + uvicorn
 tests/                suite de pytest (sin red ni .env)

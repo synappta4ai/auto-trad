@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barridos · AutoTrader</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --text: #e6e9ef; --muted: #8b93a1; --green: #35c46a; --red: #e5484d;
+    --amber: #e2a336; --blue: #4c8dff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 18px; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .3px; }
+  nav { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  nav a { font-size: 12.5px; padding: 5px 11px; border-radius: 7px; text-decoration: none;
+          color: var(--muted); border: 1px solid var(--line); background: var(--panel); }
+  nav a:hover { color: var(--text); border-color: #3a4150; }
+  nav a.on { color: var(--text); border-color: var(--blue); background: var(--panel2); }
+  .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--panel2);
+          border: 1px solid var(--line); color: var(--muted); }
+  .pill.on { color: #0d1b12; background: var(--green); border-color: transparent; font-weight: 600;
+             animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
+  .pill.off { color: #2a0e10; background: var(--red); border-color: transparent; font-weight: 600; }
+  .pill.warn { color: #241a05; background: var(--amber); border-color: transparent; font-weight: 600; }
+  a.pill { text-decoration: none; }
+  a.pill:hover { color: var(--text); border-color: var(--blue); }
+  .spacer { flex: 1; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  button { font: inherit; font-size: 13px; padding: 6px 13px; border-radius: 7px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+           transition: background .12s, border-color .12s, opacity .12s; }
+  button:hover:not(:disabled) { background: #262b36; border-color: #3a4150; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--green); border-color: transparent; color: #0b1a11; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: #3ed577; }
+  button.danger { background: var(--red); border-color: transparent; color: #fff; font-weight: 600; }
+  button.danger:hover:not(:disabled) { background: #f05a5f; }
+  button.warn { background: var(--amber); border-color: transparent; color: #241a05; font-weight: 600; }
+  button.ghost { background: transparent; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; }
+  .card .k { font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); }
+  .card .v { font-size: 19px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .card .s { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px; margin-bottom: 14px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted);
+              margin: 0 0 9px; font-weight: 600; }
+  .train-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .progress { height: 6px; background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+              overflow: hidden; margin-top: 9px; }
+  .progress-fill { height: 100%; width: 0; background: var(--blue); transition: width .25s ease; }
+  .progress-fill.active { background: linear-gradient(90deg, var(--blue), var(--green)); }
+  .stat-row { display: flex; gap: 26px; flex-wrap: wrap; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line);
+           font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  tr:last-child td { border-bottom: none; }
+  .pos { color: var(--green); } .neg { color: var(--red); } .dim { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; }
+  footer { color: var(--muted); font-size: 11.5px; text-align: center; margin-top: 6px; }
+  .cfg-note { color: var(--muted); font-size: 12px; margin-bottom: 10px; line-height: 1.5; }
+  .cfg-body { display: flex; flex-direction: column; gap: 14px; }
+  .cfg-group h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--blue);
+                  margin: 0 0 6px; font-weight: 600; }
+  .cfg-row { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: start;
+             padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.03); }
+  .cfg-row label { font-size: 13px; padding-top: 5px; }
+  .cfg-in input[type=text], .cfg-in input[type=number], .cfg-in select {
+    font: inherit; font-size: 13px; width: 100%; max-width: 420px; padding: 5px 8px;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+  .cfg-in input[type=checkbox] { width: 16px; height: 16px; margin-top: 7px; accent-color: var(--green); }
+  .cfg-in input.dirty, .cfg-in select.dirty { border-color: var(--amber); }
+  .cfg-help { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .cfg-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; padding: 1px 6px;
+         border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
+  .tag.risk { background: transparent; border-color: var(--red); color: var(--red); }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .chart { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px 4px; }
+  .chart-head { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px;
+                text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 4px; }
+  .chart-head .info { text-transform: none; letter-spacing: 0; }
+  .chart-box { min-height: 150px; }
+  .chart-box svg { display: block; width: 100%; height: auto; }
+  @media (max-width: 780px) { .charts { grid-template-columns: 1fr; } }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .verdict { display: flex; gap: 12px; align-items: flex-start; padding: 13px 15px; border-radius: 9px;
+             border: 1px solid var(--line); background: var(--panel2); }
+  .verdict .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; background: var(--muted); }
+  .verdict h3 { margin: 0 0 5px; font-size: 15px; font-weight: 600; }
+  .verdict p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+  .verdict ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+  .verdict.ok { border-color: rgba(53,196,106,.45); } .verdict.ok .dot { background: var(--green); }
+  .verdict.bad { border-color: rgba(229,72,77,.4); } .verdict.bad .dot { background: var(--red); }
+  .verdict.idle { border-color: rgba(226,163,54,.4); } .verdict.idle .dot { background: var(--amber); }
+  .gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+  .gate { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .gate .name { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; }
+  .gate .val { font-variant-numeric: tabular-nums; margin-top: 3px; font-size: 14px; font-weight: 600; }
+  .logbox { font-family: ui-monospace, "Consolas", monospace; font-size: 11.5px; line-height: 1.55;
+            max-height: 430px; overflow-y: auto; background: #12151b; border: 1px solid var(--line);
+            border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+  .logbox .row { border-bottom: 1px solid rgba(255,255,255,.03); padding: 1px 0; }
+  .logbox .ts { color: #6b7280; margin-right: 7px; }
+  .logbox .lvl { display: inline-block; min-width: 46px; font-weight: 600; }
+  .logbox .INF { color: #6ea8fe; } .logbox .WAR { color: var(--amber); }
+  .logbox .ERR { color: var(--red); } .logbox .DEB { color: #6b7280; }
+  .logbox .src { color: #8b93a1; margin-right: 6px; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 9px; }
+  .filters select, .filters input[type=text] { font: inherit; font-size: 12.5px; padding: 5px 8px;
+    border-radius: 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  .filters input[type=text] { min-width: 210px; }
+  label.chk { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+  @media (max-width: 620px) { .cfg-row { grid-template-columns: 1fr; gap: 2px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AutoTrader</h1>
+    <span class="pill" id="statePill">-</span>
+    <span class="pill" id="modePill">paper</span>
+    <span class="spacer"></span>
+    <span class="pill" id="connPill">conectando</span>
+  </header>
+  <nav>
+    <a href="/" >Panel</a>
+    <a href="/results" >Resultados</a>
+    <a href="/config" >Configuración</a>
+    <a href="/sweep"  class='on'>Barridos</a>
+    <a href="/logs" >Logs</a>
+    <a href="/docs" target="_blank" rel="noopener">API</a>
+  </nav>
+
+  <style>
+    .sw-grid { display:flex; gap:10px; flex-wrap:wrap; }
+    .sw-tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+    .sw-tbl th, .sw-tbl td { text-align:left; padding:4px 7px; border-bottom:1px solid var(--line);
+                             white-space:nowrap; }
+    .sw-tbl th { color:var(--muted); font-weight:500; font-size:11.5px; }
+    .sw-scroll { overflow-x:auto; }
+  </style>
+  <div class="panel">
+    <h2>Barridos · símbolo × temporalidad</h2>
+    <div class="cfg-note">Prueba la misma rejilla en cada combinación de símbolo y temporalidad, con un
+      walk-forward independiente por celda, y guarda cada intento en la base. Sirve para responder la única
+      pregunta que importa: <b>¿la ventaja aparece una vez o se repite?</b> No toca campeones ni posiciones.</div>
+    <div class="cfg-row"><label for="swSymbols">Símbolos</label><div class="cfg-in">
+      <input type="text" id="swSymbols" placeholder="BTC/USDT,ETH/USDT,...">
+      <div class="cfg-help">Base/cotizada separadas por coma ·
+        <a href="#" onclick="swFillUniverse();return false;">cargar universo USDT</a></div>
+    </div></div>
+    <div class="cfg-row"><label>Temporalidades</label><div class="cfg-in">
+      <div id="swTfs" class="sw-grid"></div></div></div>
+    <div class="cfg-actions">
+      <label class="chk">velas <input type="number" id="swBars" min="300" step="100" style="width:92px"></label>
+      <label class="chk">folds <input type="number" id="swFolds" min="1" max="30" style="width:64px"></label>
+      <label class="chk">test <input type="number" id="swTest" min="20" step="50" style="width:84px"
+        title="velas de cada tramo fuera de muestra"></label>
+      <button class="primary" onclick="swStart()">Lanzar barrido</button>
+      <span id="swMsg" class="dim"></span>
+    </div>
+    <div id="swRun" class="dim"></div>
+    <div id="swSummary"></div>
+  </div>
+  <div class="panel">
+    <h2>Intentos guardados</h2>
+    <div class="cfg-note">Cada fila es una prueba con su resultado fuera de muestra. Un exceso negativo
+      frente a comprar y mantener significa que el bot habría ganado menos que no hacer nada.</div>
+    <div id="swTable" class="sw-scroll"><span class="empty">cargando...</span></div>
+  </div>
+
+  <footer>BTC/USDT, ETH/USDT · capital inicial 1000.0 · http://127.0.0.1:8080 · token en <code>.env</code></footer>
+</div>
+<script>
+const TOKEN = "";
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CAPITAL = 1000.0;
+
+function esc(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+function fmt(n, d) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toFixed(d === undefined ? 2 : d) : "-";
+}
+
+function signed(n, d) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "-";
+  return (v >= 0 ? "+" : "") + v.toFixed(d === undefined ? 2 : d);
+}
+
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  if (sec < 60) return sec + " s";
+  const m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return d + "d " + (h % 24) + "h";
+  if (h > 0) return h + "h " + (m % 60) + "m";
+  return m + "m";
+}
+
+async function api(path, opts) {
+  opts = opts || {};
+  const headers = Object.assign({ "X-API-Token": TOKEN }, opts.headers || {});
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (!res.ok) {
+    let msg = path + " -> HTTP " + res.status;
+    try {
+      const d = await res.json();
+      if (d && d.detail) msg = Array.isArray(d.detail) ? d.detail.join(" · ") : String(d.detail);
+    } catch (e) { /* respuesta sin JSON */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+function setPill(el, text, cls) {
+  if (!el) return;
+  el.textContent = text;
+  el.className = "pill" + (cls ? " " + cls : "");
+}
+
+function tsLabel(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit" }) + " " +
+    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function tsFull(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : "-";
+}
+
+// ---------------------------------------------------------------- gráficas (SVG sin dependencias)
+function svgChart(ys, opt) {
+  opt = opt || {};
+  const W = 620, H = 170, PL = 48, PR = 12, PT = 10, PB = 18;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const dg = opt.digits === undefined ? 2 : opt.digits;
+  const vals = ys.filter((v) => Number.isFinite(v));
+  if (!vals.length) return "";
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if (opt.zero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  if (opt.base !== undefined) { lo = Math.min(lo, opt.base); hi = Math.max(hi, opt.base); }
+  if (!(hi > lo)) { const m = Math.abs(lo) || 1; lo -= m * 0.01; hi += m * 0.01; }
+  const pad = (hi - lo) * 0.08;
+  lo -= pad; hi += pad;
+  const X = (i) => PL + (ys.length > 1 ? i / (ys.length - 1) * iw : iw / 2);
+  const Y = (v) => PT + ih - (v - lo) / (hi - lo) * ih;
+
+  let out = "";
+  for (let k = 0; k <= 3; k++) {
+    const v = lo + (hi - lo) * k / 3, y = Y(v).toFixed(1);
+    out += '<line x1="' + PL + '" y1="' + y + '" x2="' + (W - PR) + '" y2="' + y +
+      '" stroke="#2a2f3a" stroke-width="1"/>' +
+      '<text x="' + (PL - 6) + '" y="' + (Y(v) + 3.5).toFixed(1) +
+      '" fill="#8b93a1" font-size="10" text-anchor="end">' + fmt(v, dg) + "</text>";
+  }
+  if (opt.base !== undefined) {
+    const y = Y(opt.base).toFixed(1);
+    out += '<line x1="' + PL + '" y1="' + y + '" x2="' + (W - PR) + '" y2="' + y +
+      '" stroke="#8b93a1" stroke-width="1" stroke-dasharray="4 4" opacity=".5"/>';
+  }
+  let d = "", open = false;
+  ys.forEach((v, i) => {
+    if (!Number.isFinite(v)) { open = false; return; }
+    d += (open ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1) + " ";
+    open = true;
+  });
+  if (opt.area) {
+    let first = -1, last = -1;
+    ys.forEach((v, i) => { if (Number.isFinite(v)) { if (first < 0) first = i; last = i; } });
+    if (first >= 0 && last > first) {
+      d += "L" + X(last).toFixed(1) + " " + (PT + ih) + " L" + X(first).toFixed(1) + " " + (PT + ih) + " Z";
+    }
+  }
+  out += '<path d="' + d + '" fill="' + (opt.area ? "rgba(76,141,255,.13)" : "none") +
+    '" stroke="' + (opt.color || "#4c8dff") + '" stroke-width="1.8" stroke-linejoin="round"/>';
+  if (opt.dots && opt.dots.length === ys.length) {
+    ys.forEach((v, i) => {
+      if (!Number.isFinite(v)) return;
+      out += '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(v).toFixed(1) + '" r="2.1" fill="' +
+        (opt.dots[i] || opt.color || "#4c8dff") + '"/>';
+    });
+  } else {
+    for (let i = ys.length - 1; i >= 0; i--) {
+      if (!Number.isFinite(ys[i])) continue;
+      out += '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(ys[i]).toFixed(1) + '" r="2.6" fill="' +
+        (opt.color || "#4c8dff") + '"/>';
+      break;
+    }
+  }
+  if (opt.left) out += '<text x="' + PL + '" y="' + (H - 4) + '" fill="#8b93a1" font-size="10">' + opt.left + "</text>";
+  if (opt.right) out += '<text x="' + (W - PR) + '" y="' + (H - 4) +
+    '" fill="#8b93a1" font-size="10" text-anchor="end">' + opt.right + "</text>";
+  return '<svg viewBox="0 0 ' + W + " " + H + '" role="img">' + out + "</svg>";
+}
+
+async function refreshCharts() {
+  if (!$("chartEquity") && !$("chartOos")) return;
+  try {
+    const rows = await api("/api/equity?limit=1440");
+    const ys = (rows || []).map((r) => Number(r.equity));
+    if (!ys.length) {
+      $("chartEquity").innerHTML = '<span class="empty">todavía sin puntos de equity</span>';
+      $("eqInfo").textContent = "";
+    } else {
+      $("chartEquity").innerHTML = svgChart(ys, { digits: 2, color: "#4c8dff", area: true,
+        base: Number(CAPITAL) || undefined, left: tsLabel(rows[0].ts), right: tsLabel(rows[rows.length - 1].ts) });
+      const lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
+      $("eqInfo").textContent = "último " + fmt(ys[ys.length - 1]) + " · mín " + fmt(lo) + " · máx " + fmt(hi) +
+        " · " + ys.length + " pts";
+    }
+  } catch (e) { /* silencioso */ }
+
+  if (!$("chartOos")) return;
+  try {
+    const hist = await api("/api/learning/history?limit=120");
+    if (!hist || !hist.length) {
+      $("chartOos").innerHTML = '<span class="empty">sin historial todavía: se graba en cada walk-forward</span>';
+      $("oosInfo").textContent = "";
+      return;
+    }
+    const ys = hist.map((r) => {
+      const wf = (r.report && r.report.wf_oos) || {};
+      return wf.sharpe === undefined || wf.sharpe === null ? null : Number(wf.sharpe);
+    });
+    const ok = hist.map((r) => !String(r.decision || "").startsWith("sin_ventaja"));
+    $("chartOos").innerHTML = svgChart(ys, { digits: 2, color: "#35c46a", zero: true,
+      dots: ok.map((o) => (o ? "#35c46a" : "#e5484d")),
+      left: tsLabel(hist[0].ts), right: tsLabel(hist[hist.length - 1].ts) });
+    const pass = ok.filter(Boolean).length;
+    $("oosInfo").textContent = hist.length + " · pasan " + pass + " · último " + String(hist[hist.length - 1].decision || "-");
+  } catch (e) { /* silencioso */ }
+}
+
+function statePills(s) {
+  setPill($("connPill"), "online", "");
+  setPill($("statePill"), s.running ? (s.halted ? "pausado" : "ejecutando") : "detenido",
+          s.running ? (s.halted ? "warn" : "on") : "off");
+  const mp = $("modePill");
+  if (mp) mp.textContent = s.mode + (s.learning_enabled ? " · aprendizaje" : " · estrategia fija");
+}
+
+async function refreshPills() {
+  try {
+    const s = await api("/api/status");
+    statePills(s);
+    return s;
+  } catch (e) {
+    setPill($("connPill"), "sin conexión", "off");
+    return null;
+  }
+}
+
+
+let swTimer = null, swTfList = [], swUniverse = [];
+
+function swVerdict(v) {
+  return ({ repetible: "ventaja repetida", aislado: "una sola celda",
+            sin_ventaja: "sin ventaja", sin_datos: "sin datos" })[v] || (v || "");
+}
+
+function swFillUniverse() {
+  if (swUniverse.length) $("swSymbols").value = swUniverse.join(",");
+}
+
+async function swLoad() {
+  try {
+    const d = await api("/api/sweep");
+    swTfList = d.timeframes || [];
+    swUniverse = d.universe || [];
+    const box = $("swTfs");
+    if (box && !box.dataset.ready) {
+      box.dataset.ready = "1";
+      box.innerHTML = swTfList.map((t) => '<label class="chk"><input type="checkbox" value="' + t + '"' +
+        (t === (d.cfg_timeframe || "1h") ? " checked" : "") + "> " + t + "</label>").join(" ");
+    }
+    if ($("swSymbols") && !$("swSymbols").value) $("swSymbols").value = (d.symbols || []).join(",");
+    if ($("swBars") && !$("swBars").value) $("swBars").value = d.history_bars;
+    if ($("swFolds") && !$("swFolds").value) $("swFolds").value = d.folds;
+    if ($("swTest") && !$("swTest").value) $("swTest").value = d.test_bars;
+    if ((d.run_symbols || []).length) {
+      $("swSymbols").value = d.run_symbols.join(",");
+      document.querySelectorAll("#swTfs input").forEach((x) => {
+        x.checked = (d.run_timeframes || []).indexOf(x.value) >= 0;
+      });
+      if (d.bars) $("swBars").value = d.bars;
+      if (d.run_folds) $("swFolds").value = d.run_folds;
+      swRunLine(d.run_symbols, d.run_timeframes, d.run_id);
+    }
+    renderSweep(d);
+    if (d.status !== "running") await swHistory();
+  } catch (e) {
+    $("swMsg").innerHTML = '<span class="neg">' + e.message + "</span>";
+  }
+}
+
+function renderSweep(d) {
+  if (d.status === "running") {
+    const c = d.current || {};
+    let t = "barrido en marcha · " + d.done + "/" + d.total;
+    if (c.symbol) t += " · " + c.symbol + " " + (c.timeframe || "");
+    if (c.stage) t += " · " + c.stage + " " + (c.done || 0) + "/" + (c.total || 0);
+    $("swMsg").textContent = t + " · " + fmtDur(Date.now() / 1000 - d.started);
+  } else if (d.status === "error") {
+    $("swMsg").innerHTML = '<span class="neg">' + d.error + "</span>";
+  } else if (d.status === "done") {
+    $("swMsg").textContent = "terminado · " + fmtDur(d.finished - d.started);
+  }
+  swSummary(d.summary || {});
+  if (d.status === "running" || d.status === "done") swTable(d.rows || []);
+}
+
+function swSummary(s) {
+  const box = $("swSummary");
+  if (!s || !s.cells) { box.innerHTML = ""; return; }
+  const best = s.best ? (" · mejor: " + s.best.symbol + " " + s.best.timeframe + " (" +
+    signed(s.best.excess_pct) + " pp)") : "";
+  box.innerHTML = '<div class="lab-item"><b>' + swVerdict(s.verdict) + "</b> · " + s.edge + " de " +
+    s.evaluated + " celdas con ventaja · " + s.passing + " pasan las puertas · " +
+    s.trials + " combinaciones probadas" + best + "</div><div class='dim'>" + (s.note || "") + "</div>";
+}
+
+function swTable(rows) {
+  const t = $("swTable");
+  if (!rows.length) { t.innerHTML = '<span class="empty">todavía sin intentos</span>'; return; }
+  t.innerHTML = '<table class="sw-tbl"><thead><tr><th>Celda</th><th>Decisión</th><th>Trades</th>' +
+    "<th>Sharpe</th><th>PF</th><th>DD %</th><th>Ret %</th><th>B&amp;H %</th><th>Exceso</th>" +
+    "<th>Comb.</th><th>s</th><th>Run</th></tr></thead><tbody>" +
+    rows.map((r) => {
+      const edge = r.sharpe !== null && r.sharpe !== undefined && (r.excess_pct || 0) > 0;
+      return "<tr><td>" + esc(r.symbol) + " <span class='dim'>" + esc(r.timeframe) + "</span></td><td class='" +
+        (edge ? "pos" : "neg") + "'>" + esc(r.decision || "-") + "</td><td>" +
+        (r.trades === null || r.trades === undefined ? "-" : r.trades) + "</td><td>" +
+        fmt(r.sharpe, 3) + "</td><td>" + fmt(r.pf, 2) + "</td><td>" + fmt(r.dd_pct, 1) + "</td><td>" +
+        signed(r.ret_pct) + "</td><td>" + signed(r.bh_pct) + "</td><td>" + signed(r.excess_pct) +
+        "</td><td>" + (r.candidates || "-") + "</td><td>" + fmt(r.seconds, 1) + "</td><td class='dim'>" +
+        esc(r.run_id || "-") + "</td></tr>";
+    }).join("") + "</tbody></table>";
+}
+
+async function swStart() {
+  const symbols = ($("swSymbols").value || "").trim();
+  const tfs = Array.from(document.querySelectorAll("#swTfs input:checked")).map((x) => x.value);
+  if (!symbols) { $("swMsg").textContent = "indica al menos un símbolo"; return; }
+  if (!tfs.length) { $("swMsg").textContent = "marca al menos una temporalidad"; return; }
+  const cells = symbols.split(",").filter((x) => x.trim()).length * tfs.length;
+  if (!confirm("Se van a probar " + cells + " celdas con walk-forward completo. " +
+      "Puede tardar bastante y no toca el bot. ¿Seguimos?")) return;
+  $("swMsg").textContent = "lanzando...";
+  const body = { symbols: symbols, timeframes: tfs,
+                 bars: Number($("swBars").value) || 0, folds: Number($("swFolds").value) || 0,
+                 test_bars: Number($("swTest").value) || 0 };
+  try {
+    await api("/api/sweep/start", { method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify(body) });
+    if (!swTimer) swTimer = setInterval(swPoll, 2000);
+    swPoll();
+  } catch (e) {
+    $("swMsg").innerHTML = '<span class="neg">' + e.message + "</span>";
+  }
+}
+
+async function swPoll() {
+  try {
+    const d = await api("/api/sweep");
+    renderSweep(d);
+    if (d.status !== "running") {
+      if (swTimer) { clearInterval(swTimer); swTimer = null; }
+      await swHistory();
+    }
+  } catch (e) {
+    if (swTimer) { clearInterval(swTimer); swTimer = null; }
+  }
+}
+
+async function swHistory() {
+  try {
+    const d = await api("/api/sweep/results?limit=300");
+    if (d.rows && d.rows.length) { swTable(d.rows); swRunLine(d.rows, d.latest); }
+  } catch (e) { /* silencioso */ }
+}
+
+function swRunLine(a, b, run) {
+  const el = $("swRun");
+  if (!el) return;
+  if (Array.isArray(a)) {
+    el.textContent = "barrido " + (run || "") + ": " + a.length + " símbolos (" + a.join(", ") +
+      ") × " + (b || []).join(", ");
+    return;
+  }
+  const rows = a || [], id = b || (rows[0] || {}).run_id;
+  const cells = rows.filter((r) => r.run_id === id);
+  if (!cells.length) { el.textContent = ""; return; }
+  const syms = [], tfs = [];
+  cells.forEach((r) => {
+    if (syms.indexOf(r.symbol) < 0) syms.push(r.symbol);
+    if (tfs.indexOf(r.timeframe) < 0) tfs.push(r.timeframe);
+  });
+  el.textContent = "último barrido " + id + ": " + syms.length + " símbolos (" + syms.join(", ") +
+    ") × " + tfs.join(", ") + " · " + cells.length + " celdas";
+}
+
+function api(path) { const d = __UI_DATA__; const p = String(path);
+  if (p.indexOf('/api/status') === 0) return Promise.resolve(d.status);
+  return Promise.resolve(p.indexOf('/results') >= 0 ? d.results : d.state); }
+const __UI_DATA__ = {"state": {"status": "idle", "run_id": "20261102-165013-10x1", "started": 0.0, "finished": 0.0, "error": null, "done": 0, "total": 0, "current": null, "rows": [], "summary": {}, "seconds": null, "run_symbols": ["ADA/USDT", "AVAX/USDT", "BNB/USDT", "BTC/USDT", "DOGE/USDT", "DOT/USDT", "ETH/USDT", "LINK/USDT", "SOL/USDT", "XRP/USDT"], "run_timeframes": ["1h"], "bars": 44000, "run_folds": 12, "test_bars": 3000, "symbols": ["BTC/USDT", "ETH/USDT"], "universe": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOGE/USDT", "DOT/USDT"], "timeframes": ["15m", "1h", "4h", "1d"], "history_bars": 3000, "cfg_timeframe": "1h", "folds": 3, "train_bars": 1500, "source": "synthetic", "needed": 2600}, "results": {"rows": [{"ts": 1793656422.99799, "run_id": "20261102-165013-10x1", "symbol": "DOT/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 30, "high": 65, "exit": 60}, "sharpe": -0.919, "pf": 0.72, "trades": 225, "ret_pct": -11.71, "bh_pct": -85.46, "excess_pct": 73.75, "dd_pct": 12.8, "bars": 44000, "candidates": 264, "seconds": 18.58, "test_bars": 3000, "folds": 12}, {"ts": 1793656404.408573, "run_id": "20261102-165013-10x1", "symbol": "DOGE/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 10, "low": 20, "high": 65, "exit": 60}, "sharpe": -1.851, "pf": 0.595, "trades": 614, "ret_pct": -26.53, "bh_pct": 15.12, "excess_pct": -41.65, "dd_pct": 27.29, "bars": 44000, "candidates": 264, "seconds": 22.41, "test_bars": 3000, "folds": 12}, {"ts": 1793656381.9690747, "run_id": "20261102-165013-10x1", "symbol": "LINK/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 25, "high": 60, "exit": 40}, "sharpe": -0.524, "pf": 0.792, "trades": 307, "ret_pct": -10.18, "bh_pct": 41.55, "excess_pct": -51.73, "dd_pct": 13.09, "bars": 44000, "candidates": 264, "seconds": 23.54, "test_bars": 3000, "folds": 12}, {"ts": 1793656358.4134774, "run_id": "20261102-165013-10x1", "symbol": "AVAX/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 25, "high": 60, "exit": 50}, "sharpe": -0.564, "pf": 0.85, "trades": 334, "ret_pct": -14.45, "bh_pct": -53.23, "excess_pct": 38.78, "dd_pct": 23.85, "bars": 44000, "candidates": 264, "seconds": 23.37, "test_bars": 3000, "folds": 12}, {"ts": 1793656335.028669, "run_id": "20261102-165013-10x1", "symbol": "ADA/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 10, "low": 20, "high": 65, "exit": 60}, "sharpe": -1.063, "pf": 0.69, "trades": 301, "ret_pct": -16.53, "bh_pct": -59.15, "excess_pct": 42.62, "dd_pct": 16.93, "bars": 44000, "candidates": 264, "seconds": 22.36, "test_bars": 3000, "folds": 12}, {"ts": 1793656312.662697, "run_id": "20261102-165013-10x1", "symbol": "XRP/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 7, "low": 20, "high": 60, "exit": 40}, "sharpe": -0.74, "pf": 0.738, "trades": 195, "ret_pct": -7.51, "bh_pct": 150.26, "excess_pct": -157.77, "dd_pct": 9.04, "bars": 44000, "candidates": 264, "seconds": 22.0, "test_bars": 3000, "folds": 12}, {"ts": 1793656290.6565773, "run_id": "20261102-165013-10x1", "symbol": "BNB/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 25, "high": 60, "exit": 50}, "sharpe": -0.927, "pf": 0.658, "trades": 295, "ret_pct": -16.62, "bh_pct": 149.93, "excess_pct": -166.55, "dd_pct": 19.58, "bars": 44000, "candidates": 264, "seconds": 20.16, "test_bars": 3000, "folds": 12}, {"ts": 1793656270.4716709, "run_id": "20261102-165013-10x1", "symbol": "SOL/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 20, "high": 60, "exit": 40}, "sharpe": 0.07, "pf": 1.027, "trades": 343, "ret_pct": 0.97, "bh_pct": 168.85, "excess_pct": -167.88, "dd_pct": 11.18, "bars": 44000, "candidates": 264, "seconds": 19.98, "test_bars": 3000, "folds": 12}, {"ts": 1793656250.48109, "run_id": "20261102-165013-10x1", "symbol": "ETH/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 7, "low": 25, "high": 65, "exit": 60}, "sharpe": -1.001, "pf": 0.673, "trades": 317, "ret_pct": -17.27, "bh_pct": 67.5, "excess_pct": -84.77, "dd_pct": 17.28, "bars": 44000, "candidates": 264, "seconds": 20.51, "test_bars": 3000, "folds": 12}, {"ts": 1793656229.958984, "run_id": "20261102-165013-10x1", "symbol": "BTC/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 20, "high": 60, "exit": 40}, "sharpe": -0.667, "pf": 0.974, "trades": 237, "ret_pct": -11.41, "bh_pct": 301.92, "excess_pct": -313.33, "dd_pct": 16.1, "bars": 44000, "candidates": 264, "seconds": 16.69, "test_bars": 3000, "folds": 12}, {"ts": 1793656078.628131, "run_id": "20261102-164151-10x2", "symbol": "DOT/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 7, "low": 20, "high": 65, "exit": 60}, "sharpe": -0.631, "pf": 0.832, "trades": 14, "ret_pct": -0.55, "bh_pct": 0.21, "excess_pct": -0.76, "dd_pct": 1.98, "bars": 13602, "candidates": 264, "seconds": 12.05, "test_bars": 300, "folds": 3}, {"ts": 1793656066.5470283, "run_id": "20261102-164151-10x2", "symbol": "DOT/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "ml_logit", "params": {"train_bars": 800, "threshold": 0.1}, "sharpe": -8.013, "pf": 0.0, "trades": 9, "ret_pct": -2.65, "bh_pct": -23.42, "excess_pct": 20.77, "dd_pct": 2.65, "bars": 44000, "candidates": 264, "seconds": 22.83, "test_bars": 300, "folds": 3}, {"ts": 1793656043.6981895, "run_id": "20261102-164151-10x2", "symbol": "DOGE/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 10, "low": 20, "high": 60, "exit": 40}, "sharpe": 1.847, "pf": 1.708, "trades": 3, "ret_pct": 0.55, "bh_pct": -8.96, "excess_pct": 9.51, "dd_pct": 0.32, "bars": 16062, "candidates": 264, "seconds": 12.52, "test_bars": 300, "folds": 3}, {"ts": 1793656031.1721077, "run_id": "20261102-164151-10x2", "symbol": "DOGE/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 25, "high": 65, "exit": 60}, "sharpe": -5.908, "pf": 0.045, "trades": 10, "ret_pct": -3.09, "bh_pct": -24.47, "excess_pct": 21.38, "dd_pct": 3.09, "bars": 44000, "candidates": 264, "seconds": 24.59, "test_bars": 300, "folds": 3}, {"ts": 1793656006.5492132, "run_id": "20261102-164151-10x2", "symbol": "LINK/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 35, "high": 65, "exit": 60}, "sharpe": -1.264, "pf": 0.233, "trades": 5, "ret_pct": -1.41, "bh_pct": 51.98, "excess_pct": -53.39, "dd_pct": 1.98, "bars": 17080, "candidates": 264, "seconds": 13.3, "test_bars": 300, "folds": 3}, {"ts": 1793655993.2386277, "run_id": "20261102-164151-10x2", "symbol": "LINK/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 35, "high": 65, "exit": 60}, "sharpe": -11.176, "pf": 0.37, "trades": 13, "ret_pct": -4.82, "bh_pct": -21.54, "excess_pct": 16.72, "dd_pct": 5.13, "bars": 44000, "candidates": 264, "seconds": 25.72, "test_bars": 300, "folds": 3}, {"ts": 1793655967.517647, "run_id": "20261102-164151-10x2", "symbol": "AVAX/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 30, "high": 60, "exit": 50}, "sharpe": 1.917, "pf": 99.0, "trades": 3, "ret_pct": 0.96, "bh_pct": 24.78, "excess_pct": -23.82, "dd_pct": 0.33, "bars": 13396, "candidates": 264, "seconds": 11.27, "test_bars": 300, "folds": 3}, {"ts": 1793655956.219759, "run_id": "20261102-164151-10x2", "symbol": "AVAX/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 25, "high": 60, "exit": 40}, "sharpe": -3.409, "pf": 0.123, "trades": 8, "ret_pct": -2.06, "bh_pct": -21.73, "excess_pct": 19.67, "dd_pct": 3.04, "bars": 44000, "candidates": 264, "seconds": 21.93, "test_bars": 300, "folds": 3}, {"ts": 1793655934.2749367, "run_id": "20261102-164151-10x2", "symbol": "ADA/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 25, "high": 65, "exit": 60}, "sharpe": -0.946, "pf": 0.608, "trades": 8, "ret_pct": -0.89, "bh_pct": 17.0, "excess_pct": -17.89, "dd_pct": 2.25, "bars": 18721, "candidates": 264, "seconds": 14.91, "test_bars": 300, "folds": 3}, {"ts": 1793655919.3366125, "run_id": "20261102-164151-10x2", "symbol": "ADA/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "ml_logit", "params": {"train_bars": 1200, "threshold": 0.1}, "sharpe": -3.809, "pf": 0.157, "trades": 11, "ret_pct": -2.9, "bh_pct": -26.25, "excess_pct": 23.35, "dd_pct": 3.42, "bars": 44000, "candidates": 264, "seconds": 25.08, "test_bars": 300, "folds": 3}, {"ts": 1793655894.2328203, "run_id": "20261102-164151-10x2", "symbol": "XRP/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 10, "low": 25, "high": 60, "exit": 40}, "sharpe": 1.786, "pf": 2.913, "trades": 8, "ret_pct": 1.05, "bh_pct": 13.82, "excess_pct": -12.77, "dd_pct": 0.57, "bars": 18618, "candidates": 264, "seconds": 14.01, "test_bars": 300, "folds": 3}, {"ts": 1793655880.221293, "run_id": "20261102-164151-10x2", "symbol": "XRP/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "ml_logit", "params": {"train_bars": 1200, "threshold": 0.1}, "sharpe": 0.0, "pf": 0.0, "trades": 0, "ret_pct": 0.0, "bh_pct": -19.56, "excess_pct": 19.56, "dd_pct": 0.0, "bars": 44000, "candidates": 264, "seconds": 25.35, "test_bars": 300, "folds": 3}, {"ts": 1793655854.851242, "run_id": "20261102-164151-10x2", "symbol": "BNB/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 10, "low": 35, "high": 65, "exit": 60}, "sharpe": 1.674, "pf": 2.903, "trades": 9, "ret_pct": 1.85, "bh_pct": 22.94, "excess_pct": -21.09, "dd_pct": 1.19, "bars": 19687, "candidates": 264, "seconds": 8.36, "test_bars": 300, "folds": 3}, {"ts": 1793655846.4657938, "run_id": "20261102-164151-10x2", "symbol": "BNB/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "breakout", "params": {"lookback": 60, "exit_ratio": 0.7}, "sharpe": -6.754, "pf": 0.0, "trades": 5, "ret_pct": -1.85, "bh_pct": -10.07, "excess_pct": 8.22, "dd_pct": 2.13, "bars": 44000, "candidates": 264, "seconds": 25.38, "test_bars": 300, "folds": 3}, {"ts": 1793655821.055584, "run_id": "20261102-164151-10x2", "symbol": "SOL/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 7, "low": 25, "high": 65, "exit": 60}, "sharpe": -1.149, "pf": 0.636, "trades": 13, "ret_pct": -0.94, "bh_pct": 44.66, "excess_pct": -45.6, "dd_pct": 2.04, "bars": 13648, "candidates": 264, "seconds": 15.11, "test_bars": 300, "folds": 3}, {"ts": 1793655805.9186947, "run_id": "20261102-164151-10x2", "symbol": "SOL/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "breakout", "params": {"lookback": 20, "exit_ratio": 0.3}, "sharpe": -11.236, "pf": 0.036, "trades": 16, "ret_pct": -5.01, "bh_pct": -24.13, "excess_pct": 19.12, "dd_pct": 5.03, "bars": 44000, "candidates": 264, "seconds": 23.48, "test_bars": 300, "folds": 3}, {"ts": 1793655782.434582, "run_id": "20261102-164151-10x2", "symbol": "ETH/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 7, "low": 30, "high": 65, "exit": 60}, "sharpe": 0.437, "pf": 1.252, "trades": 9, "ret_pct": 0.41, "bh_pct": 43.21, "excess_pct": -42.8, "dd_pct": 1.31, "bars": 20172, "candidates": 264, "seconds": 16.28, "test_bars": 300, "folds": 3}, {"ts": 1793655766.144458, "run_id": "20261102-164151-10x2", "symbol": "ETH/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "rsi_reversion", "params": {"period": 14, "low": 30, "high": 65, "exit": 60}, "sharpe": -8.098, "pf": 0.021, "trades": 11, "ret_pct": -2.92, "bh_pct": -16.45, "excess_pct": 13.53, "dd_pct": 3.03, "bars": 44000, "candidates": 264, "seconds": 29.17, "test_bars": 300, "folds": 3}, {"ts": 1793655736.9456975, "run_id": "20261102-164151-10x2", "symbol": "BTC/USDT", "timeframe": "4h", "decision": "sin_ventaja", "strategy": "ema_cross", "params": {"fast": 5, "slow": 100}, "sharpe": -0.265, "pf": 0.815, "trades": 14, "ret_pct": -0.42, "bh_pct": 27.85, "excess_pct": -28.27, "dd_pct": 2.46, "bars": 20172, "candidates": 264, "seconds": 18.47, "test_bars": 300, "folds": 3}, {"ts": 1793655718.4662964, "run_id": "20261102-164151-10x2", "symbol": "BTC/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "breakout", "params": {"lookback": 60, "exit_ratio": 0.7}, "sharpe": -7.742, "pf": 0.0, "trades": 6, "ret_pct": -1.53, "bh_pct": -8.83, "excess_pct": 7.3, "dd_pct": 1.69, "bars": 44000, "candidates": 264, "seconds": 6.91, "test_bars": 300, "folds": 3}, {"ts": 1793655396.3201933, "run_id": "20261102-163631-1x1", "symbol": "BTC/USDT", "timeframe": "1h", "decision": "sin_ventaja", "strategy": "breakout", "params": {"lookback": 60, "exit_ratio": 0.7}, "sharpe": -7.742, "pf": 0.0, "trades": 6, "ret_pct": -1.53, "bh_pct": -8.83, "excess_pct": 7.3, "dd_pct": 1.69, "bars": 3000, "candidates": 264, "seconds": 5.06, "test_bars": 300, "folds": 3}], "run_id": null, "latest": "20261102-165013-10x1"}, "status": {"running": false, "mode": "paper", "learning_enabled": true, "halted": false}};
+refreshPills();
+swLoad();
+setInterval(refreshPills, 5000);
+
+</script>
+</body>
+</html>

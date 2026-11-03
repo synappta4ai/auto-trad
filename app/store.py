@@ -6,7 +6,7 @@ import threading
 import time
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 EVENTS_KEEP_DAYS = 30      # retención de la tabla `events`
 EVENTS_MAX_ROWS = 20000    # y tope duro, para que no crezca sin freno
 PRUNE_EVERY = 500          # cada cuántos eventos se intenta podar
@@ -44,7 +44,18 @@ class Store:
                 open REAL, high REAL, low REAL, close REAL, volume REAL,
                 PRIMARY KEY(symbol, timeframe, ts));
             CREATE TABLE IF NOT EXISTS settings(env TEXT PRIMARY KEY, value TEXT, updated REAL);
+            CREATE TABLE IF NOT EXISTS experiments(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, run_id TEXT,
+                symbol TEXT, timeframe TEXT, decision TEXT, strategy TEXT, params TEXT, sharpe REAL, pf REAL,
+                trades INTEGER, ret_pct REAL, bh_pct REAL, excess_pct REAL, dd_pct REAL, bars INTEGER,
+                candidates INTEGER, seconds REAL, test_bars INTEGER, folds INTEGER, report TEXT);
+            CREATE INDEX IF NOT EXISTS idx_exp_run ON experiments(run_id, ts);
+            CREATE INDEX IF NOT EXISTS idx_exp_cell ON experiments(symbol, timeframe, ts);
             """)
+            # columnas añadidas después: las bases ya creadas necesitan el ALTER
+            cols = {r[1] for r in self.db.execute("PRAGMA table_info(experiments)").fetchall()}
+            for col in ("test_bars", "folds"):
+                if col not in cols:
+                    self.db.execute(f"ALTER TABLE experiments ADD COLUMN {col} INTEGER")
             self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.db.commit()
 
@@ -106,6 +117,52 @@ class Store:
             rows = self.db.execute(q, args).fetchall()
         return [{"ts": r[0], "symbol": r[1], "decision": r[2], "report": json.loads(r[3])}
                 for r in rows][::-1]
+
+    # --- barridos: cada celda símbolo×temporalidad es un intento guardado -------
+    def add_experiment(self, run_id, row):
+        """Guarda un intento del barrido. Sirve para contar pruebas y no
+        confundir un acierto por azar con una ventaja que se repite."""
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO experiments(ts,run_id,symbol,timeframe,decision,strategy,params,sharpe,pf,"
+                "trades,ret_pct,bh_pct,excess_pct,dd_pct,bars,candidates,seconds,test_bars,folds,report) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (time.time(), run_id, row.get("symbol"), row.get("timeframe"),
+                 row.get("decision") or row.get("status"), row.get("strategy"),
+                 json.dumps(row.get("params"), default=_j), row.get("sharpe"), row.get("pf"),
+                 row.get("trades"), row.get("ret_pct"), row.get("bh_pct"), row.get("excess_pct"),
+                 row.get("dd_pct"), row.get("bars"), row.get("candidates"), row.get("seconds"),
+                 row.get("test_bars"), row.get("folds"),
+                 json.dumps({k: v for k, v in row.items() if k != "params"}, default=_j)))
+            self.db.commit()
+
+    def experiments(self, run_id=None, limit=500):
+        """Intentos guardados, del más reciente al más antiguo."""
+        q = ("SELECT ts,run_id,symbol,timeframe,decision,strategy,params,sharpe,pf,trades,"
+             "ret_pct,bh_pct,excess_pct,dd_pct,bars,candidates,seconds,test_bars,folds FROM experiments")
+        args = []
+        if run_id:
+            q += " WHERE run_id=?"
+            args.append(run_id)
+        q += " ORDER BY id DESC LIMIT ?"
+        args.append(int(limit))
+        with self.lock:
+            rows = self.db.execute(q, args).fetchall()
+        keys = ["ts", "run_id", "symbol", "timeframe", "decision", "strategy", "params", "sharpe",
+                "pf", "trades", "ret_pct", "bh_pct", "excess_pct", "dd_pct", "bars", "candidates",
+                "seconds", "test_bars", "folds"]
+        out = []
+        for r in rows:
+            d = dict(zip(keys, r))
+            d["params"] = json.loads(d["params"]) if d["params"] else None
+            out.append(d)
+        return out
+
+    def latest_run_id(self):
+        """Identificador del último barrido guardado (o None)."""
+        with self.lock:
+            r = self.db.execute("SELECT run_id FROM experiments ORDER BY id DESC LIMIT 1").fetchone()
+        return r[0] if r else None
 
     # --- caché de velas: entrenar sin volver a pedir datos al exchange ---------
     def save_candles(self, symbol, timeframe, rows):
